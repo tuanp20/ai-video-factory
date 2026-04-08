@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="AI Video Factory — Nền tảng sản xuất video AI hàng loạt">
+    <title>AI Video Factory — Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar">
+    <div class="container">
+        <a href="/" class="navbar-brand">⚡ AI Video Factory</a>
+        <div class="navbar-links">
+            <a href="/" class="active">Dashboard</a>
+            <a href="/admin">Review</a>
+        </div>
+    </div>
+</nav>
+
+<div class="container" style="padding-top: 1.5rem; padding-bottom: 3rem;">
+
+    <!-- Page Header -->
+    <div class="page-header">
+        <h1>Video Production Pipeline</h1>
+        <p class="subtitle">Tạo video AI hàng loạt — Từ URL bài viết đến video hoàn chỉnh</p>
+    </div>
+
+    <!-- ================================ -->
+    <!-- Phase 0: Content Scraping        -->
+    <!-- ================================ -->
+    <div class="card" id="phase0-card">
+        <div class="card-header">
+            <span class="phase-badge">Phase 0</span>
+            <h3>🔍 Săn Nội Dung (Auto-Crawl)</h3>
+        </div>
+        <div class="form-group">
+            <label for="scrape-url">URL bài viết</label>
+            <div style="display: flex; gap: 0.75rem;">
+                <input type="text" id="scrape-url" class="form-input" placeholder="https://vnexpress.net/bai-viet-mau.html" style="flex:1">
+                <button class="btn btn-primary" id="btn-scrape" onclick="handleScrape()">
+                    <span class="spinner hidden" id="scrape-spinner"></span>
+                    Auto-Crawl
+                </button>
+            </div>
+        </div>
+        <div class="result-box" id="scrape-result">
+            <h3 class="mb-1" style="color: var(--accent-secondary);">📝 Kết quả LLM</h3>
+            <div class="form-group">
+                <label>Tiêu đề</label>
+                <input type="text" id="result-title" class="form-input" placeholder="Tiêu đề video...">
+            </div>
+            <div class="form-group">
+                <label>Kịch bản TTS</label>
+                <textarea id="result-script" class="form-textarea" rows="4" placeholder="Kịch bản đọc..."></textarea>
+            </div>
+            <div class="form-group">
+                <label>Video Prompts (mỗi dòng 1 prompt)</label>
+                <textarea id="result-prompts" class="form-textarea" rows="4" placeholder="Prompt 1&#10;Prompt 2&#10;Prompt 3"></textarea>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================================ -->
+    <!-- Phase 1: Upload & Phase 2: Submit -->
+    <!-- ================================ -->
+    <div class="card" id="phase1-card">
+        <div class="card-header">
+            <span class="phase-badge">Phase 1-2</span>
+            <h3>🎬 Tạo Video (Input & Submit)</h3>
+        </div>
+
+        <!-- Upload Image -->
+        <div class="form-group">
+            <label>Ảnh nguồn (Start Frame cho I2V)</label>
+            <div class="dropzone" id="dropzone">
+                <input type="file" id="file-input" accept="image/*" onchange="handleFileSelect(event)">
+                <div class="dropzone-icon">📁</div>
+                <div class="dropzone-text">Kéo thả ảnh vào đây hoặc <strong>click để chọn file</strong></div>
+                <div class="dropzone-preview" id="file-preview"></div>
+            </div>
+            <input type="hidden" id="uploaded-image-url" value="">
+        </div>
+
+        <!-- Config -->
+        <div class="form-row">
+            <div class="form-group">
+                <label for="select-model">AI Model</label>
+                <select id="select-model" class="form-select" onchange="handleModelChange()">
+                    <option value="kling-3.0">Kling 3.0 (I2V)</option>
+                    <option value="kling-motion">Kling Motion (I2V)</option>
+                    <option value="veo-3-fast">Veo 3 Fast (T2V/I2V/R2V)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="select-mode">Chế độ</label>
+                <select id="select-mode" class="form-select">
+                    <option value="i2v">Image-to-Video (I2V)</option>
+                    <option value="t2v">Text-to-Video (T2V)</option>
+                    <option value="r2v">Reference-to-Video (R2V)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label for="select-quality">Chất lượng</label>
+                <select id="select-quality" class="form-select">
+                    <option value="1080p">1080p</option>
+                    <option value="720p">720p</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="input-duration">Thời lượng (giây)</label>
+                <input type="number" id="input-duration" class="form-input" value="5" min="3" max="15">
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label for="select-ratio">Tỷ lệ khung hình</label>
+                <select id="select-ratio" class="form-select">
+                    <option value="9:16">9:16 (TikTok/Shorts)</option>
+                    <option value="16:9">16:9 (YouTube)</option>
+                    <option value="1:1">1:1 (Instagram)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>&nbsp;</label>
+            </div>
+        </div>
+
+        <!-- Prompt & Script -->
+        <div class="form-group">
+            <label for="input-prompt">Prompt tạo Video *</label>
+            <textarea id="input-prompt" class="form-textarea" rows="3" placeholder="Mô tả cảnh video cần tạo bằng tiếng Anh..."></textarea>
+        </div>
+
+        <div class="form-group">
+            <label for="input-script">Kịch bản TTS (tiếng Việt, để trống nếu không cần giọng đọc)</label>
+            <textarea id="input-script" class="form-textarea" rows="3" placeholder="Kịch bản đọc bằng giọng tiếng Việt..."></textarea>
+        </div>
+
+        <div class="form-group">
+            <label for="input-title">Tiêu đề Job</label>
+            <input type="text" id="input-title" class="form-input" placeholder="Tên video / mô tả ngắn">
+        </div>
+
+        <button class="btn btn-success" id="btn-submit" onclick="handleSubmit()" style="width:100%; margin-top: 0.5rem;">
+            <span class="spinner hidden" id="submit-spinner"></span>
+            🚀 Đưa vào hàng đợi xử lý
+        </button>
+    </div>
+
+    <!-- ================================ -->
+    <!-- Jobs Dashboard                   -->
+    <!-- ================================ -->
+    <div class="card" id="jobs-card">
+        <div class="card-header">
+            <span class="phase-badge">Live</span>
+            <h3>📊 Danh sách Jobs</h3>
+            <button class="btn btn-outline btn-sm" onclick="loadJobs()">↻ Refresh</button>
+        </div>
+
+        <!-- Filter -->
+        <div style="margin-bottom: 1rem;">
+            <select id="filter-status" class="form-select" onchange="loadJobs()" style="max-width: 200px;">
+                <option value="">Tất cả</option>
+                <option value="queued">Queued</option>
+                <option value="processing">Processing</option>
+                <option value="rendered">Rendered</option>
+                <option value="pending_review">Pending Review</option>
+                <option value="approved">Approved</option>
+                <option value="failed">Failed</option>
+                <option value="rejected">Rejected</option>
+            </select>
+        </div>
+
+        <div style="overflow-x: auto;">
+            <table class="jobs-table" id="jobs-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Tiêu đề</th>
+                        <th>Model</th>
+                        <th>Trạng thái</th>
+                        <th>Thời gian</th>
+                        <th>Hành động</th>
+                    </tr>
+                </thead>
+                <tbody id="jobs-tbody">
+                    <tr><td colspan="6" class="text-center text-muted" style="padding: 2rem;">Đang tải...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- Loading Overlay -->
+<div class="loading-overlay" id="loading-overlay">
+    <div style="text-align: center;">
+        <div class="spinner" style="width: 48px; height: 48px; border-width: 4px;"></div>
+        <p class="mt-2 text-muted" id="loading-text">Đang xử lý...</p>
+    </div>
+</div>
+
+<script>
+// =============================================
+// Utility Functions
+// =============================================
+
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(() => toast.remove(), 3500);
+}
+
+function showLoading(text = 'Đang xử lý...') {
+    document.getElementById('loading-text').textContent = text;
+    document.getElementById('loading-overlay').classList.add('show');
+}
+
+function hideLoading() {
+    document.getElementById('loading-overlay').classList.remove('show');
+}
+
+function formatTime(isoStr) {
+    if (!isoStr) return '—';
+    const d = new Date(isoStr);
+    return d.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+}
+
+// =============================================
+// Phase 0: Scrape
+// =============================================
+
+async function handleScrape() {
+    const url = document.getElementById('scrape-url').value.trim();
+    if (!url) { showToast('Vui lòng nhập URL', 'error'); return; }
+
+    const btn = document.getElementById('btn-scrape');
+    const spinner = document.getElementById('scrape-spinner');
+    btn.disabled = true;
+    spinner.classList.remove('hidden');
+
+    try {
+        const res = await fetch('/api/scrape', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            document.getElementById('result-title').value = data.title || '';
+            document.getElementById('result-script').value = data.script || '';
+            document.getElementById('result-prompts').value = (data.video_prompts || []).join('\n');
+            document.getElementById('scrape-result').classList.add('show');
+
+            // Auto-fill submit form
+            document.getElementById('input-title').value = data.title || '';
+            document.getElementById('input-script').value = data.script || '';
+            if (data.video_prompts && data.video_prompts.length > 0) {
+                document.getElementById('input-prompt').value = data.video_prompts[0];
+            }
+
+            showToast('Crawl thành công! Kịch bản đã được tạo.', 'success');
+        } else {
+            showToast(data.detail || 'Không thể crawl URL', 'error');
+        }
+    } catch (e) {
+        showToast('Lỗi kết nối server', 'error');
+    } finally {
+        btn.disabled = false;
+        spinner.classList.add('hidden');
+    }
+}
+
+// =============================================
+// Phase 1: File Upload
+// =============================================
+
+const dropzone = document.getElementById('dropzone');
+
+dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+});
+
+function handleFileSelect(e) {
+    if (e.target.files.length) uploadFile(e.target.files[0]);
+}
+
+async function uploadFile(file) {
+    if (!file.type.startsWith('image/')) {
+        showToast('Chỉ chấp nhận file ảnh', 'error');
+        return;
+    }
+
+    // Preview
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        document.getElementById('file-preview').innerHTML = `<img src="${e.target.result}" alt="Preview">`;
+    };
+    reader.readAsDataURL(file);
+
+    // Upload
+    showLoading('Đang upload ảnh...');
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (data.success) {
+            document.getElementById('uploaded-image-url').value = data.url;
+            showToast(`Upload thành công: ${(data.size / 1024).toFixed(0)} KB`, 'success');
+        } else {
+            showToast(data.detail || 'Upload thất bại', 'error');
+        }
+    } catch (e) {
+        showToast('Lỗi upload', 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+// =============================================
+// Phase 2: Submit Job
+// =============================================
+
+async function handleSubmit() {
+    const prompt = document.getElementById('input-prompt').value.trim();
+    if (!prompt) { showToast('Vui lòng nhập prompt tạo video', 'error'); return; }
+
+    const payload = {
+        title: document.getElementById('input-title').value || 'Video Job',
+        image_url: document.getElementById('uploaded-image-url').value || null,
+        prompt: prompt,
+        script_text: document.getElementById('input-script').value || null,
+        model: document.getElementById('select-model').value,
+        mode: document.getElementById('select-mode').value,
+        quality: document.getElementById('select-quality').value,
+        duration: parseInt(document.getElementById('input-duration').value) || 5,
+        aspect_ratio: document.getElementById('select-ratio').value,
+    };
+
+    const btn = document.getElementById('btn-submit');
+    const spinner = document.getElementById('submit-spinner');
+    btn.disabled = true;
+    spinner.classList.remove('hidden');
+
+    try {
+        const res = await fetch('/api/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            showToast(`Job #${data.job.id} đã được đưa vào hàng đợi! 🚀`, 'success');
+            loadJobs();
+            // Reset form
+            document.getElementById('input-prompt').value = '';
+            document.getElementById('input-script').value = '';
+            document.getElementById('input-title').value = '';
+        } else {
+            showToast(data.detail || 'Không thể tạo job', 'error');
+        }
+    } catch (e) {
+        showToast('Lỗi kết nối server', 'error');
+    } finally {
+        btn.disabled = false;
+        spinner.classList.add('hidden');
+    }
+}
+
+// =============================================
+// Model change handler
+// =============================================
+
+function handleModelChange() {
+    const model = document.getElementById('select-model').value;
+    const modeSelect = document.getElementById('select-mode');
+
+    if (model === 'veo-3-fast') {
+        modeSelect.innerHTML = `
+            <option value="t2v">Text-to-Video (T2V)</option>
+            <option value="i2v">Image-to-Video (I2V)</option>
+            <option value="r2v">Reference-to-Video (R2V)</option>
+        `;
+    } else {
+        modeSelect.innerHTML = `<option value="i2v">Image-to-Video (I2V)</option>`;
+    }
+}
+
+// =============================================
+// Jobs Dashboard
+// =============================================
+
+async function loadJobs() {
+    const status = document.getElementById('filter-status').value;
+    const url = status ? `/api/jobs?status=${status}&limit=50` : '/api/jobs?limit=50';
+
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.success) {
+            renderJobs(data.jobs);
+        }
+    } catch (e) {
+        console.error('Failed to load jobs:', e);
+    }
+}
+
+function renderJobs(jobs) {
+    const tbody = document.getElementById('jobs-tbody');
+
+    if (!jobs || jobs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted" style="padding:2rem;">Chưa có job nào</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = jobs.map(job => `
+        <tr>
+            <td><strong>#${job.id}</strong></td>
+            <td class="job-title">${job.title || '—'}</td>
+            <td><code style="font-size:0.8rem; color: var(--accent-primary)">${job.model}</code></td>
+            <td><span class="badge badge-${job.status}">${job.status}</span></td>
+            <td class="job-time">${formatTime(job.created_at)}</td>
+            <td>
+                ${job.final_video_url ? `<a href="${job.final_video_url}" target="_blank" class="btn btn-outline btn-sm">🎥 Xem</a>` : ''}
+                ${job.raw_video_url && !job.final_video_url ? `<a href="${job.raw_video_url}" target="_blank" class="btn btn-outline btn-sm">Raw</a>` : ''}
+            </td>
+        </tr>
+    `).join('');
+}
+
+// Auto-refresh jobs every 8 seconds
+loadJobs();
+setInterval(loadJobs, 8000);
+</script>
+
+</body>
+</html>

@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="AI Video Factory — Trang duyệt video">
+    <title>AI Video Factory — Review</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar">
+    <div class="container">
+        <a href="/" class="navbar-brand">⚡ AI Video Factory</a>
+        <div class="navbar-links">
+            <a href="/">Dashboard</a>
+            <a href="/admin" class="active">Review</a>
+        </div>
+    </div>
+</nav>
+
+<div class="container" style="padding-top: 1.5rem; padding-bottom: 3rem;">
+
+    <div class="page-header">
+        <h1>Quality Gate — Duyệt Video</h1>
+        <p class="subtitle">Xem và phê duyệt các video đang chờ kiểm duyệt</p>
+    </div>
+
+    <!-- Stats Bar -->
+    <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem;" id="stats-bar">
+        <div class="card" style="flex: 1; min-width: 150px; margin-bottom: 0; text-align: center;">
+            <div style="font-size: 2rem; font-weight: 800; color: var(--accent-warning);" id="stat-pending">0</div>
+            <div class="text-muted" style="font-size: 0.8rem;">Chờ duyệt</div>
+        </div>
+        <div class="card" style="flex: 1; min-width: 150px; margin-bottom: 0; text-align: center;">
+            <div style="font-size: 2rem; font-weight: 800; color: var(--accent-secondary);" id="stat-approved">0</div>
+            <div class="text-muted" style="font-size: 0.8rem;">Đã duyệt</div>
+        </div>
+        <div class="card" style="flex: 1; min-width: 150px; margin-bottom: 0; text-align: center;">
+            <div style="font-size: 2rem; font-weight: 800; color: var(--accent-danger);" id="stat-rejected">0</div>
+            <div class="text-muted" style="font-size: 0.8rem;">Từ chối</div>
+        </div>
+        <div class="card" style="flex: 1; min-width: 150px; margin-bottom: 0; text-align: center;">
+            <div style="font-size: 2rem; font-weight: 800; color: var(--accent-info);" id="stat-processing">0</div>
+            <div class="text-muted" style="font-size: 0.8rem;">Đang xử lý</div>
+        </div>
+    </div>
+
+    <!-- Review Cards -->
+    <div id="review-list">
+        <div class="text-center text-muted" style="padding: 3rem;">Đang tải danh sách video...</div>
+    </div>
+
+</div>
+
+<!-- Reject Modal -->
+<div id="reject-modal" style="display:none; position:fixed; inset:0; background:var(--bg-modal); z-index:1000; align-items:center; justify-content:center;">
+    <div class="card" style="max-width: 480px; width: 90%; margin: auto;">
+        <h3 class="mb-2">❌ Từ chối Video</h3>
+        <div class="form-group">
+            <label for="reject-reason">Lý do từ chối</label>
+            <textarea id="reject-reason" class="form-textarea" rows="3" placeholder="Nhập lý do từ chối..."></textarea>
+        </div>
+        <div style="display: flex; gap: 0.75rem; justify-content: flex-end;">
+            <button class="btn btn-outline" onclick="closeRejectModal()">Hủy</button>
+            <button class="btn btn-danger" id="btn-confirm-reject" onclick="confirmReject()">Xác nhận từ chối</button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+let currentRejectJobId = null;
+
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(() => toast.remove(), 3500);
+}
+
+function formatTime(isoStr) {
+    if (!isoStr) return '—';
+    const d = new Date(isoStr);
+    return d.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+// =============================================
+// Load & Render
+// =============================================
+
+async function loadReviewData() {
+    try {
+        // Load pending_review jobs
+        const [pendingRes, approvedRes, rejectedRes, processingRes] = await Promise.all([
+            fetch('/api/jobs?status=pending_review&limit=100'),
+            fetch('/api/jobs?status=approved&limit=5'),
+            fetch('/api/jobs?status=rejected&limit=5'),
+            fetch('/api/jobs?status=processing&limit=5'),
+        ]);
+
+        const pending = await pendingRes.json();
+        const approved = await approvedRes.json();
+        const rejected = await rejectedRes.json();
+        const processing = await processingRes.json();
+
+        // Stats
+        document.getElementById('stat-pending').textContent = pending.total || 0;
+        document.getElementById('stat-approved').textContent = approved.total || 0;
+        document.getElementById('stat-rejected').textContent = rejected.total || 0;
+        document.getElementById('stat-processing').textContent = processing.total || 0;
+
+        // Render review cards
+        renderReviewCards(pending.jobs || []);
+
+    } catch (e) {
+        console.error('Failed to load data:', e);
+        document.getElementById('review-list').innerHTML =
+            '<div class="text-center text-danger" style="padding:2rem;">Lỗi kết nối server</div>';
+    }
+}
+
+function renderReviewCards(jobs) {
+    const container = document.getElementById('review-list');
+
+    if (!jobs.length) {
+        container.innerHTML = `
+            <div class="card text-center" style="padding: 3rem;">
+                <div style="font-size: 3rem; margin-bottom: 1rem;">✅</div>
+                <h3>Không có video nào chờ duyệt</h3>
+                <p class="text-muted mt-1">Tất cả đã được xử lý!</p>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = jobs.map(job => `
+        <div class="card" id="review-card-${job.id}">
+            <div class="card-header">
+                <span class="badge badge-pending_review">Chờ duyệt</span>
+                <h3>Job #${job.id} — ${job.title || 'Untitled'}</h3>
+                <span class="text-muted" style="font-size:0.8rem;">${formatTime(job.created_at)}</span>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 360px 1fr; gap: 1.5rem; align-items: start;">
+                <!-- Video Preview -->
+                <div>
+                    ${job.final_video_url ? `
+                        <div class="video-preview">
+                            <video controls preload="metadata" poster="${job.thumbnail_url || ''}">
+                                <source src="${job.final_video_url}" type="video/mp4">
+                            </video>
+                        </div>
+                    ` : job.raw_video_url ? `
+                        <div class="video-preview">
+                            <video controls preload="metadata">
+                                <source src="${job.raw_video_url}" type="video/mp4">
+                            </video>
+                        </div>
+                    ` : `
+                        <div style="background: var(--bg-input); border-radius: var(--radius-md); padding: 3rem; text-align:center;">
+                            <div style="font-size: 2rem;">🎬</div>
+                            <div class="text-muted mt-1">Chưa có video</div>
+                        </div>
+                    `}
+                </div>
+
+                <!-- Info -->
+                <div>
+                    <div class="mb-1">
+                        <span class="text-muted" style="font-size:0.8rem;">MODEL</span><br>
+                        <code style="color: var(--accent-primary)">${job.model}</code> · ${job.mode} · ${job.quality} · ${job.duration}s
+                    </div>
+                    <div class="mb-1">
+                        <span class="text-muted" style="font-size:0.8rem;">PROMPT</span><br>
+                        <span style="font-size: 0.9rem;">${(job.prompt || '').substring(0, 200)}${(job.prompt || '').length > 200 ? '...' : ''}</span>
+                    </div>
+                    ${job.script_text ? `
+                        <div class="mb-1">
+                            <span class="text-muted" style="font-size:0.8rem;">TTS SCRIPT</span><br>
+                            <span style="font-size: 0.85rem; color: var(--text-secondary);">${job.script_text.substring(0, 150)}${job.script_text.length > 150 ? '...' : ''}</span>
+                        </div>
+                    ` : ''}
+
+                    <!-- Actions -->
+                    <div style="display: flex; gap: 0.75rem; margin-top: 1.5rem;">
+                        <button class="btn btn-success" onclick="approveJob(${job.id})">✅ Approve</button>
+                        <button class="btn btn-danger" onclick="openRejectModal(${job.id})">❌ Reject</button>
+                        ${job.final_video_url ? `<a href="${job.final_video_url}" target="_blank" class="btn btn-outline">⬇️ Download</a>` : ''}
+                    </div>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+// =============================================
+// Approve / Reject Actions
+// =============================================
+
+async function approveJob(jobId) {
+    try {
+        const res = await fetch(`/api/jobs/${jobId}/approve`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            showToast(`Job #${jobId} đã được duyệt! ✅`, 'success');
+            // Remove card with animation
+            const card = document.getElementById(`review-card-${jobId}`);
+            if (card) {
+                card.style.transition = 'all 0.3s ease';
+                card.style.opacity = '0';
+                card.style.transform = 'translateX(50px)';
+                setTimeout(() => { card.remove(); loadReviewData(); }, 300);
+            }
+        } else {
+            showToast(data.detail || 'Lỗi duyệt video', 'error');
+        }
+    } catch (e) {
+        showToast('Lỗi kết nối server', 'error');
+    }
+}
+
+function openRejectModal(jobId) {
+    currentRejectJobId = jobId;
+    document.getElementById('reject-reason').value = '';
+    document.getElementById('reject-modal').style.display = 'flex';
+}
+
+function closeRejectModal() {
+    document.getElementById('reject-modal').style.display = 'none';
+    currentRejectJobId = null;
+}
+
+async function confirmReject() {
+    if (!currentRejectJobId) return;
+    const reason = document.getElementById('reject-reason').value.trim();
+
+    try {
+        const res = await fetch(`/api/jobs/${currentRejectJobId}/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason }),
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast(`Job #${currentRejectJobId} đã bị từ chối`, 'error');
+            closeRejectModal();
+            loadReviewData();
+        } else {
+            showToast(data.detail || 'Lỗi', 'error');
+        }
+    } catch (e) {
+        showToast('Lỗi kết nối server', 'error');
+    }
+}
+
+// Initial load & auto-refresh
+loadReviewData();
+setInterval(loadReviewData, 10000);
+</script>
+
+</body>
+</html>

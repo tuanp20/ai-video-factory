@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+celery[redis]
+redis
+boto3
+trafilatura
+edge-tts
+ffmpeg-python
+jinja2
+python-multipart
+python-dotenv
+sqlalchemy
+google-genai
+pydantic
+httpx
+gevent
