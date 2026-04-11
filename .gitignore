@@ -14,6 +14,7 @@ env/
 
 # Environment Variables (Secrets)
 .env
+credentials.json
 
 # Database
 *.db
@@ -21,6 +22,7 @@ env/
 
 # Temp processing files
 tmp_processing/
+tmp/
 
 # IDE
 .vscode/

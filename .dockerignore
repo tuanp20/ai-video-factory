@@ -1,0 +1,21 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+*.db
+tmp/
+tmp_processing/
+.git/
+.gitignore
+Dockerfile
+docker-compose.yml
+.idea/
+.vscode/
+
+# Ignore local config
+.dockerignore

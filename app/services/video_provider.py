@@ -159,7 +159,7 @@ class PlenxaiAdapter(VideoProvider):
 
                 status = data.get("status", "").lower()
 
-                if status == "succeeded":
+                if status in ("succeeded", "completed", "complete"):
                     result = {
                         "task_id": task_id,
                         "result_url": data.get("result_url"),

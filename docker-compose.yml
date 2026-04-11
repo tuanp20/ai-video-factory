@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    container_name: ai_video_factory_web
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  worker:
+    build: .
+    container_name: ai_video_factory_worker
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    command: celery -A app.worker.tasks worker --loglevel=info
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai_video_factory_redis
+    ports:
+      - "6380:6379"
+    restart: unless-stopped

@@ -36,22 +36,67 @@
             <span class="phase-badge">Phase 0</span>
             <h3>🔍 Săn Nội Dung (Auto-Crawl)</h3>
         </div>
-        <div class="form-group">
-            <label for="scrape-url">URL bài viết</label>
-            <div style="display: flex; gap: 0.75rem;">
-                <input type="text" id="scrape-url" class="form-input" placeholder="https://vnexpress.net/bai-viet-mau.html" style="flex:1">
-                <button class="btn btn-primary" id="btn-scrape" onclick="handleScrape()">
-                    <span class="spinner hidden" id="scrape-spinner"></span>
-                    Auto-Crawl
-                </button>
+
+        <!-- Tab Headers -->
+        <div class="tab-headers">
+            <button class="tab-btn active" onclick="switchTab('single')">Đơn lẻ (Single)</button>
+            <button class="tab-btn" onclick="switchTab('bulk')">Hàng loạt (Bulk CSV/Excel)</button>
+        </div>
+
+        <!-- Single Scrape Content -->
+        <div id="tab-single" class="tab-content show">
+            <div class="form-group">
+                <label for="scrape-url">URL bài viết / sản phẩm</label>
+                <div style="display: flex; gap: 0.75rem;">
+                    <input type="text" id="scrape-url" class="form-input" placeholder="Dán link Shopee hoặc bài báo vào đây..." style="flex:1">
+                    <button class="btn btn-primary" id="btn-scrape" onclick="handleScrape()">
+                        <span class="spinner hidden" id="scrape-spinner"></span>
+                        Auto-Crawl
+                    </button>
+                </div>
             </div>
         </div>
+
+        <!-- Bulk Scrape Content -->
+        <div id="tab-bulk" class="tab-content">
+            <div class="form-group">
+                <label>Import file CSV/Excel (Chứa cột URL)</label>
+                <div class="dropzone" id="bulk-dropzone" style="padding: 1rem; border-style: dashed; border-width: 2px;">
+                    <input type="file" id="bulk-file-input" accept=".csv, .xlsx, .xls" onchange="handleBulkFileSelect(event)" style="display: none;">
+                    <div onclick="document.getElementById('bulk-file-input').click()" style="cursor: pointer; text-align: center;">
+                        <span style="font-size: 2rem;">📊</span>
+                        <p>Kéo thả file hoặc <strong>click để chọn CSV/Excel</strong></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Single Result Box -->
         <div class="result-box" id="scrape-result">
             <h3 class="mb-1" style="color: var(--accent-secondary);">📝 Kết quả LLM</h3>
-            <div class="form-group">
-                <label>Tiêu đề</label>
-                <input type="text" id="result-title" class="form-input" placeholder="Tiêu đề video...">
+            
+            <!-- Product Preview Section -->
+            <div id="product-preview" style="display: flex; gap: 1.5rem; margin-bottom: 1.5rem; padding: 1rem; background: rgba(255,255,255,0.05); border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+                <div id="crawled-image-container" style="width: 150px; height: 150px; flex-shrink: 0; border-radius: 6px; overflow: hidden; background: #222; display: flex; align-items: center; justify-content: center;">
+                    <img id="crawled-image" src="" alt="Product Image" style="width: 100%; height: 100%; object-fit: cover; display: none;">
+                    <span id="no-image-text" style="font-size: 0.8rem; color: #666;">No Image</span>
+                </div>
+                <div style="flex: 1;">
+                    <div class="form-group" style="margin-bottom: 0.5rem;">
+                        <label style="font-size: 0.75rem; opacity: 0.7;">Tiêu đề</label>
+                        <input type="text" id="result-title" class="form-input" style="font-weight: bold; background: transparent; border: none; padding: 0;" readonly>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0.5rem;">
+                        <label style="font-size: 0.75rem; opacity: 0.7;">Giá thành</label>
+                        <div id="result-price" style="color: #ff4757; font-weight: bold; font-size: 1.1rem;">Liên hệ</div>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label style="font-size: 0.75rem; opacity: 0.7;">Mô tả ngắn</label>
+                        <p id="result-description" style="font-size: 0.9rem; line-height: 1.4; color: #ccc; margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;"></p>
+                    </div>
+                </div>
             </div>
+
             <div class="form-group">
                 <label>Kịch bản TTS</label>
                 <textarea id="result-script" class="form-textarea" rows="4" placeholder="Kịch bản đọc..."></textarea>
@@ -59,6 +104,27 @@
             <div class="form-group">
                 <label>Video Prompts (mỗi dòng 1 prompt)</label>
                 <textarea id="result-prompts" class="form-textarea" rows="4" placeholder="Prompt 1&#10;Prompt 2&#10;Prompt 3"></textarea>
+            </div>
+        </div>
+
+        <!-- Bulk Result Table -->
+        <div id="bulk-result-container" class="result-box" style="margin-top: 1rem;">
+            <h3 class="mb-1" style="color: var(--accent-secondary);">📋 Danh sách cào hàng loạt (<span id="bulk-count">0</span>)</h3>
+            <div style="overflow-x: auto;">
+                <table class="jobs-table">
+                    <thead>
+                        <tr>
+                            <th>Ảnh</th>
+                            <th>Sản phẩm</th>
+                            <th>Giá</th>
+                            <th>Trạng thái</th>
+                            <th>Hành động</th>
+                        </tr>
+                    </thead>
+                    <tbody id="bulk-tbody">
+                        <!-- Bulk rows here -->
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
@@ -240,7 +306,28 @@ function formatTime(isoStr) {
 }
 
 // =============================================
-// Phase 0: Scrape
+// Tab System
+// =============================================
+
+function switchTab(tab) {
+    // Buttons
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    event.target.classList.add('active');
+
+    // Content
+    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('show'));
+    document.getElementById(`tab-${tab}`).classList.add('show');
+    
+    // Reset result views
+    if (tab === 'single') {
+        document.getElementById('bulk-result-container').classList.remove('show');
+    } else {
+        document.getElementById('scrape-result').classList.remove('show');
+    }
+}
+
+// =============================================
+// Phase 0: Scrape (Single)
 // =============================================
 
 async function handleScrape() {
@@ -261,19 +348,9 @@ async function handleScrape() {
         const data = await res.json();
 
         if (data.success) {
-            document.getElementById('result-title').value = data.title || '';
-            document.getElementById('result-script').value = data.script || '';
-            document.getElementById('result-prompts').value = (data.video_prompts || []).join('\n');
             document.getElementById('scrape-result').classList.add('show');
-
-            // Auto-fill submit form
-            document.getElementById('input-title').value = data.title || '';
-            document.getElementById('input-script').value = data.script || '';
-            if (data.video_prompts && data.video_prompts.length > 0) {
-                document.getElementById('input-prompt').value = data.video_prompts[0];
-            }
-
-            showToast('Crawl thành công! Kịch bản đã được tạo.', 'success');
+            fillSingleResult(data);
+            showToast('Crawl và phân tích thành công!', 'success');
         } else {
             showToast(data.detail || 'Không thể crawl URL', 'error');
         }
@@ -283,6 +360,114 @@ async function handleScrape() {
         btn.disabled = false;
         spinner.classList.add('hidden');
     }
+}
+
+function fillSingleResult(data) {
+    document.getElementById('result-title').value = data.title || '';
+    document.getElementById('result-price').textContent = data.price || 'Liên hệ';
+    document.getElementById('result-description').textContent = data.description || '';
+    document.getElementById('result-script').value = data.script || '';
+    document.getElementById('result-prompts').value = (data.video_prompts || []).join('\n');
+
+    const imgEl = document.getElementById('crawled-image');
+    const noImgEl = document.getElementById('no-image-text');
+    if (data.image_url) {
+        imgEl.src = data.image_url;
+        imgEl.style.display = 'block';
+        noImgEl.style.display = 'none';
+        document.getElementById('uploaded-image-url').value = data.image_url;
+        document.getElementById('file-preview').innerHTML = `<img src="${data.image_url}" alt="Preview">`;
+    } else {
+        imgEl.style.display = 'none';
+        noImgEl.style.display = 'block';
+    }
+
+    document.getElementById('input-title').value = data.title || '';
+    document.getElementById('input-script').value = data.script || '';
+    if (data.video_prompts && data.video_prompts.length > 0) {
+        document.getElementById('input-prompt').value = data.video_prompts[0];
+    }
+}
+
+// =============================================
+// Phase 0: Bulk Scrape
+// =============================================
+
+async function handleBulkFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    showLoading(`Đang cào dữ liệu hàng loạt từ ${file.name}...`);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch('/api/scrape/bulk', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (data.success) {
+            renderBulkResults(data.results);
+            document.getElementById('bulk-result-container').classList.add('show');
+            document.getElementById('bulk-count').textContent = data.results.length;
+            showToast(`Đã cào xong ${data.results.length} sản phẩm!`, 'success');
+        } else {
+            showToast(data.detail || 'Lỗi import file', 'error');
+        }
+    } catch (e) {
+        showToast('Lỗi hệ thống khi xử lý file', 'error');
+    } finally {
+        hideLoading();
+        e.target.value = ''; // Reset input
+    }
+}
+
+let bulkItems = []; // Store results globally for "Use" buttons
+
+function renderBulkResults(results) {
+    bulkItems = results;
+    const tbody = document.getElementById('bulk-tbody');
+    
+    tbody.innerHTML = results.map((item, index) => {
+        if (item.error) {
+            return `<tr style="opacity: 0.5;">
+                <td colspan="4" style="color: #ff4757;">❌ Lỗi: ${item.source_url} (${item.error})</td>
+                <td><a href="${item.source_url}" target="_blank" class="btn btn-outline btn-sm">Link</a></td>
+            </tr>`;
+        }
+        return `
+            <tr>
+                <td><img src="${item.image_url}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 4px;"></td>
+                <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.title}</td>
+                <td style="color: #ff4757; font-weight: bold;">${item.price}</td>
+                <td><span class="badge badge-approved">Success</span></td>
+                <td>
+                    <button class="btn btn-primary btn-sm" onclick="useBulkItem(${index})">⚡ Tạo Video</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function useBulkItem(index) {
+    const item = bulkItems[index];
+    if (!item) return;
+
+    // Fill the Submit Form (Phase 1-2)
+    document.getElementById('input-title').value = item.title || '';
+    document.getElementById('input-script').value = item.script || '';
+    if (item.video_prompts && item.video_prompts.length > 0) {
+        document.getElementById('input-prompt').value = item.video_prompts[0];
+    }
+    
+    // Image handling
+    if (item.image_url) {
+        document.getElementById('uploaded-image-url').value = item.image_url;
+        document.getElementById('file-preview').innerHTML = `<img src="${item.image_url}" alt="Preview">`;
+    }
+
+    // Scroll to submit form
+    document.getElementById('phase1-card').scrollIntoView({ behavior: 'smooth' });
+    showToast(`Đã chọn sản phẩm: ${item.title.substring(0, 30)}...`, 'info');
 }
 
 // =============================================

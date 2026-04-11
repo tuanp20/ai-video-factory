@@ -3,33 +3,40 @@ AI Video Factory — FastAPI Application
 
 API Endpoints:
   POST /api/scrape          Phase 0: Scrape URL → LLM script
-  POST /api/upload          Phase 1: Upload image to R2
+  POST /api/scrape/bulk     Phase 0: Bulk Scrape from CSV/Excel
+  POST /api/scrape/sheet/preview  Phase 0: Preview Google Sheet links
+  POST /api/scrape/sheet    Phase 0: Crawl from Google Sheet + update status
   POST /api/submit          Phase 2: Submit job to Celery queue
   GET  /api/jobs             List jobs (filter by status)
   GET  /api/jobs/{id}        Job detail
   POST /api/jobs/{id}/approve   Approve a pending video
   POST /api/jobs/{id}/reject    Reject with reason
 
-  GET  /               Dashboard
-  GET  /admin           Review page
+  GET  /               React SPA Dashboard
+  GET  /admin           React SPA Review page
   GET  /health          Health check
 """
 
 import logging
+import os
+import io
+import asyncio
+import pandas as pd
 from contextlib import asynccontextmanager
+from typing import Optional
+
 from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException
-from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional
 
 from app.core.config import settings
 from app.core.database import get_db, init_db
 from app.core.models import VideoJob, JobLog, JobStatus
 from app.services.scraper import scrape_article, generate_script_with_llm
 from app.services.storage import upload_file_to_r2
+from app.services.google_sheet import read_sheet_links, update_link_status, parse_sheet_url
 from app.worker.tasks import process_video_pipeline
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -50,13 +57,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Video Automation Factory", lifespan=lifespan)
 
-# Static files & Templates
-import os
+# Static files
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+# React SPA index path
+REACT_INDEX = os.path.join(os.path.dirname(__file__), "static", "react", "index.html")
 
 
 # =============================================
@@ -80,19 +87,22 @@ class SubmitJobRequest(BaseModel):
 class RejectRequest(BaseModel):
     reason: str = ""
 
+class SheetScrapeRequest(BaseModel):
+    sheet_url: str
+
 
 # =============================================
-# Page Routes (HTML)
+# Page Routes — React SPA
 # =============================================
 
 @app.get("/")
-async def dashboard(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+async def dashboard():
+    return FileResponse(REACT_INDEX, media_type="text/html")
 
 
 @app.get("/admin")
-async def admin_page(request: Request):
-    return templates.TemplateResponse("admin.html", {"request": request})
+async def admin_page():
+    return FileResponse(REACT_INDEX, media_type="text/html")
 
 
 @app.get("/health")
@@ -106,17 +116,175 @@ def health_check():
 
 @app.post("/api/scrape")
 async def api_scrape(req: ScrapeRequest):
-    """Scrape a URL and generate video script via LLM."""
-    text = scrape_article(req.url)
-    if not text:
+    """Scrape a single URL and generate video script via LLM."""
+    data = await scrape_article(req.url)
+    if not data:
         raise HTTPException(status_code=400, detail="Could not extract content from URL")
 
-    result = generate_script_with_llm(text)
+    result = generate_script_with_llm(data)
     return {
         "success": True,
         "source_url": req.url,
-        "extracted_length": len(text),
         **result,
+    }
+
+
+@app.post("/api/scrape/bulk")
+async def api_scrape_bulk(file: UploadFile = File(...)):
+    """Import CSV/Excel, extract URLs, and scrape all items in batch."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    # Read file contents into pandas
+    contents = await file.read()
+    ext = file.filename.split(".")[-1].lower()
+    
+    try:
+        if ext == "csv":
+            df = pd.read_csv(io.BytesIO(contents))
+        elif ext in ["xlsx", "xls"]:
+            df = pd.read_excel(io.BytesIO(contents))
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file format (CSV/XLSX only)")
+
+        # Extract URLs (look for any column containing 'http' or having 'url/link' in name)
+        urls = []
+
+        # Strategy 1: Look for columns that might contain URLs based on name
+        url_cols = [c for c in df.columns if any(k in str(c).lower() for k in ["url", "link", "product", "sản phẩm"])]
+
+        for col in url_cols:
+            possible = df[col].dropna().astype(str).str.strip().tolist()
+            found = [u for u in possible if u.startswith("http")]
+            if found:
+                urls = found
+                break
+
+        # Strategy 2: If no luck, search ALL columns for anything starting with http
+        if not urls:
+            for col in df.columns:
+                possible = df[col].dropna().astype(str).str.strip().tolist()
+                found = [u for u in possible if u.startswith("http")]
+                if found:
+                    urls = found
+                    break
+
+        if not urls:
+            raise HTTPException(status_code=400, detail="No valid URLs found in file. Please ensure at least one column contains links starting with 'http'.")
+
+        # Limit batch size for safety (100 as requested)
+        urls = urls[:100] 
+        logger.info(f"[API] Batch scraping {len(urls)} URLs...")
+
+        async def process_one(url: str):
+            try:
+                data = await scrape_article(url)
+                if not data: return {"source_url": url, "error": "Scraping failed"}
+                result = generate_script_with_llm(data)
+                return {"source_url": url, "success": True, **result}
+            except Exception as e:
+                return {"source_url": url, "error": str(e)}
+
+        results = await asyncio.gather(*(process_one(u) for u in urls))
+
+        return {
+            "success": True,
+            "total": len(urls),
+            "results": results,
+        }
+
+    except HTTPException as he:
+        # Re-raise FastAPIs own HTTPExceptions
+        raise he
+    except Exception as e:
+        logger.error(f"[API] Bulk scrape error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# =============================================
+# Phase 0b: Google Sheet Scraping
+# =============================================
+
+@app.post("/api/scrape/sheet/preview")
+async def api_sheet_preview(req: SheetScrapeRequest):
+    """Preview links from a Google Sheet — show which will be crawled vs skipped."""
+    try:
+        sheet_data = read_sheet_links(req.sheet_url)
+        return {
+            "success": True,
+            "sheet_title": sheet_data["sheet_title"],
+            "total_links": len(sheet_data["links"]),
+            "to_crawl": sum(1 for l in sheet_data["links"] if l["should_crawl"]),
+            "to_skip": sum(1 for l in sheet_data["links"] if not l["should_crawl"]),
+            "links": sheet_data["links"],
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[API] Sheet preview error: {e}")
+        raise HTTPException(status_code=500, detail=f"Cannot read sheet: {str(e)}")
+
+
+@app.post("/api/scrape/sheet")
+async def api_scrape_sheet(req: SheetScrapeRequest):
+    """Crawl all eligible links from a Google Sheet and write back status."""
+    try:
+        sheet_data = read_sheet_links(req.sheet_url)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[API] Sheet read error: {e}")
+        raise HTTPException(status_code=500, detail=f"Cannot read sheet: {str(e)}")
+
+    crawlable = [l for l in sheet_data["links"] if l["should_crawl"]]
+
+    if not crawlable:
+        return {
+            "success": True,
+            "total": 0,
+            "message": "No links to crawl — all links are already marked as used.",
+            "results": [],
+        }
+
+    # Limit batch size
+    crawlable = crawlable[:100]
+    logger.info(f"[API] Sheet crawling {len(crawlable)} links from '{sheet_data['sheet_title']}'")
+
+    results = []
+    for link_info in crawlable:
+        url = link_info["url"]
+        row = link_info["row"]
+        try:
+            data = await scrape_article(url)
+            if not data:
+                results.append({"source_url": url, "row": row, "error": "Scraping failed"})
+                continue
+
+            result = generate_script_with_llm(data)
+            results.append({"source_url": url, "row": row, "success": True, **result})
+
+            # Write status back to sheet
+            try:
+                update_link_status(
+                    spreadsheet_id=sheet_data["spreadsheet_id"],
+                    sheet_title=sheet_data["sheet_title"],
+                    row=row,
+                    status_col_index=sheet_data["status_col_index"],
+                )
+            except Exception as ws_err:
+                logger.warning(f"[API] Could not update sheet status for row {row}: {ws_err}")
+
+        except Exception as e:
+            results.append({"source_url": url, "row": row, "error": str(e)})
+
+    return {
+        "success": True,
+        "total": len(results),
+        "sheet_title": sheet_data["sheet_title"],
+        "results": results,
     }
 
 
@@ -252,9 +420,6 @@ async def api_approve_job(job_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     logger.info(f"[API] Job {job_id} approved")
-
-    # TODO: Hook for TikTok/Shorts auto-publish
-    # publish_to_tiktok(job)
 
     return {"success": True, "job": job.to_dict()}
 
