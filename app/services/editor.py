@@ -156,9 +156,9 @@ def concat_videos_with_audio(
         list_file = os.path.join(temp_dir, "concat_list.txt")
         with open(list_file, "w", encoding="utf-8") as f:
             for p in normalized_paths:
-                # FFmpeg concat requires forward slashes or escaped paths
-                safe_path = p.replace("\\", "/")
-                f.write(f"file '{safe_path}'\n")
+                # Use basename only — all files are in the same temp_dir as the list file
+                basename = os.path.basename(p)
+                f.write(f"file '{basename}'\n")
 
         concat_path = os.path.join(temp_dir, "concat_temp.mp4")
         _run_ffmpeg([
