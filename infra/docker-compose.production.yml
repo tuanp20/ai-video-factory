@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  web:
+    build: 
+      context: ../
+      dockerfile: Dockerfile
+    container_name: ${PROJECT_NAME:-ai_video_factory_prod}_web
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=production
+    depends_on:
+      - redis
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    build: 
+      context: ../
+      dockerfile: Dockerfile
+    container_name: ${PROJECT_NAME:-ai_video_factory_prod}_worker
+    env_file:
+      - ../.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=production
+    depends_on:
+      - redis
+    command: celery -A app.worker.tasks worker --loglevel=info
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${PROJECT_NAME:-ai_video_factory_prod}_redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  redis_data:

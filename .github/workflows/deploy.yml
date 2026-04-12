@@ -1,0 +1,49 @@
+name: Deploy to Dedicated VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VIDEO_VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VIDEO_VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Sync Code to VPS via Rsync
+        run: |
+          rsync -avz --delete \
+            --exclude '.git' \
+            --exclude 'venv' \
+            --exclude '__pycache__' \
+            --exclude 'tmp_processing' \
+            ./ ${{ secrets.VIDEO_VPS_USER }}@${{ secrets.VIDEO_VPS_HOST }}:/opt/ai_video_factory/
+
+      - name: Write .env from GitHub Secrets
+        run: |
+          ssh ${{ secrets.VIDEO_VPS_USER }}@${{ secrets.VIDEO_VPS_HOST }} << 'EOF'
+            echo "R2_ACCOUNT_ID=${{ secrets.PROD_R2_ACCOUNT_ID }}" > /opt/ai_video_factory/.env
+            echo "R2_ACCESS_KEY=${{ secrets.PROD_R2_ACCESS_KEY }}" >> /opt/ai_video_factory/.env
+            echo "R2_SECRET_KEY=${{ secrets.PROD_R2_SECRET_KEY }}" >> /opt/ai_video_factory/.env
+            echo "R2_BUCKET_NAME=${{ secrets.PROD_R2_BUCKET_NAME }}" >> /opt/ai_video_factory/.env
+            echo "R2_PUBLIC_URL=${{ secrets.PROD_R2_PUBLIC_URL }}" >> /opt/ai_video_factory/.env
+            echo "PLENXAI_API_KEY=${{ secrets.PROD_PLENXAI_API_KEY }}" >> /opt/ai_video_factory/.env
+            echo "GEMINI_API_KEY=${{ secrets.PROD_GEMINI_API_KEY }}" >> /opt/ai_video_factory/.env
+            echo "DATABASE_URL=sqlite:///./ai_video_factory.db" >> /opt/ai_video_factory/.env
+            echo "DEFAULT_VIDEO_MODEL=kling-3.0" >> /opt/ai_video_factory/.env
+          EOF
+
+      - name: Execute Deploy Script
+        run: |
+          ssh ${{ secrets.VIDEO_VPS_USER }}@${{ secrets.VIDEO_VPS_HOST }} \
+            "bash /opt/ai_video_factory/scripts/deploy.sh /opt/ai_video_factory ai_video_factory_prod"
