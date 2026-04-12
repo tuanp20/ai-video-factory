@@ -9,6 +9,12 @@ Pipeline flow:
   5. Concat video + audio via FFmpeg
   6. Upload final video to R2
   7. Update job → status = pending_review
+
+Merge pipeline:
+  1. Extract audio from TikTok URL (yt-dlp)
+  2. Download source videos from completed jobs
+  3. Concat videos + TikTok audio via FFmpeg
+  4. Upload merged video
 """
 
 import os
@@ -16,10 +22,11 @@ import logging
 from celery import Celery
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.models import VideoJob, JobLog, JobStatus
+from app.core.models import VideoJob, JobLog, JobStatus, MergeJob, MergeStatus
 from app.services.video_provider import get_provider, ProviderError
 from app.services.editor import generate_tts, concat_videos_with_audio, _ensure_temp_dir, cleanup_temp
 from app.services.storage import download_file_from_url, upload_file_from_path
+from app.services.tiktok_audio import extract_audio, validate_tiktok_url
 
 logger = logging.getLogger(__name__)
 
@@ -179,3 +186,131 @@ def _mark_failed(db, job_id: int, phase: str, message: str):
         _add_log(db, job_id, phase, f"FAILED: {message}")
     except Exception:
         logger.exception(f"[Worker] Could not mark job {job_id} as failed")
+
+
+# =============================================
+# Merge Pipeline — Phase 5: Post-Production
+# =============================================
+
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=30)
+def process_merge_pipeline(self, merge_job_id: int):
+    """
+    Merge multiple videos + TikTok audio into a single video.
+
+    Steps:
+      1. Extract audio from TikTok URL (if provided)
+      2. Download raw videos from source jobs
+      3. Concat videos + overlay TikTok audio
+      4. Upload merged video
+    """
+    db = SessionLocal()
+    temp_dir = None
+
+    try:
+        merge = db.query(MergeJob).filter(MergeJob.id == merge_job_id).first()
+        if not merge:
+            logger.error(f"[Merge] MergeJob {merge_job_id} not found")
+            return {"status": "error", "message": f"MergeJob {merge_job_id} not found"}
+
+        merge.celery_task_id = self.request.id
+        merge.status = MergeStatus.EXTRACTING_AUDIO
+        db.commit()
+
+        temp_dir = _ensure_temp_dir(job_id=None)
+        logger.info(f"[Merge #{merge_job_id}] Pipeline started — jobs: {merge.source_job_ids}")
+
+        # --- Step 1: Extract TikTok audio ---
+        tiktok_audio_path = None
+        if merge.tiktok_url and merge.tiktok_url.strip():
+            logger.info(f"[Merge #{merge_job_id}] Extracting audio from TikTok: {merge.tiktok_url}")
+            tiktok_audio_path = os.path.join(temp_dir, "tiktok_audio")
+            tiktok_audio_path = extract_audio(merge.tiktok_url.strip(), tiktok_audio_path)
+
+            # Save audio to storage
+            tiktok_audio_url = upload_file_from_path(tiktok_audio_path, f"tiktok_merge_{merge_job_id}.mp3", "audio/mpeg")
+            merge.tiktok_audio_url = tiktok_audio_url
+            db.commit()
+            logger.info(f"[Merge #{merge_job_id}] TikTok audio saved: {tiktok_audio_url}")
+
+        # --- Step 2: Download source videos ---
+        merge.status = MergeStatus.DOWNLOADING
+        db.commit()
+
+        video_paths = []
+        for i, job_id in enumerate(merge.source_job_ids):
+            job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
+            if not job:
+                logger.warning(f"[Merge #{merge_job_id}] Job {job_id} not found, skipping")
+                continue
+
+            # Prefer raw_video_url, fall back to final_video_url
+            video_url = job.raw_video_url or job.final_video_url
+            if not video_url:
+                logger.warning(f"[Merge #{merge_job_id}] Job {job_id} has no video URL, skipping")
+                continue
+
+            # Handle local paths (from local storage fallback)
+            local_path = os.path.join(temp_dir, f"source_{i}.mp4")
+            if video_url.startswith("/static/"):
+                # Local file — copy from static dir
+                import shutil
+                src = os.path.join(os.path.dirname(os.path.dirname(__file__)), video_url.lstrip("/"))
+                if os.path.exists(src):
+                    shutil.copy2(src, local_path)
+                else:
+                    logger.warning(f"[Merge #{merge_job_id}] Local file not found: {src}")
+                    continue
+            else:
+                download_file_from_url(video_url, local_path)
+
+            video_paths.append(local_path)
+
+        if not video_paths:
+            raise RuntimeError("No valid source videos found to merge")
+
+        logger.info(f"[Merge #{merge_job_id}] Downloaded {len(video_paths)} videos")
+
+        # --- Step 3: Merge videos + audio ---
+        merge.status = MergeStatus.MERGING
+        db.commit()
+
+        output_path = os.path.join(temp_dir, "merged_final.mp4")
+        concat_videos_with_audio(
+            video_paths=video_paths,
+            audio_path=tiktok_audio_path,
+            output_path=output_path,
+        )
+        logger.info(f"[Merge #{merge_job_id}] Videos merged successfully")
+
+        # --- Step 4: Upload ---
+        merge.status = MergeStatus.UPLOADING
+        db.commit()
+
+        merged_url = upload_file_from_path(output_path, f"merged_{merge_job_id}.mp4", "video/mp4")
+        merge.merged_video_url = merged_url
+        merge.status = MergeStatus.DONE
+        db.commit()
+
+        logger.info(f"[Merge #{merge_job_id}] Pipeline completed: {merged_url}")
+        return {
+            "status": "success",
+            "merge_id": merge_job_id,
+            "merged_video_url": merged_url,
+        }
+
+    except Exception as e:
+        logger.error(f"[Merge #{merge_job_id}] Pipeline failed: {e}", exc_info=True)
+        try:
+            merge = db.query(MergeJob).filter(MergeJob.id == merge_job_id).first()
+            if merge:
+                merge.status = MergeStatus.FAILED
+                merge.error_message = str(e)[:500]
+                db.commit()
+        except Exception:
+            pass
+        return {"status": "error", "merge_id": merge_job_id, "message": str(e)}
+
+    finally:
+        db.close()
+        if temp_dir:
+            cleanup_temp(temp_dir=temp_dir)

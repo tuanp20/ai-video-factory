@@ -782,6 +782,282 @@ function JobsTable({ refreshKey }) {
 }
 
 // =============================================
+// Post-Production: Merge Videos + TikTok Audio
+// =============================================
+
+function MergePanel({ addToast }) {
+    const [completedJobs, setCompletedJobs] = useState([]);
+    const [selectedIds, setSelectedIds] = useState([]);
+    const [tiktokUrl, setTiktokUrl] = useState('');
+    const [mergeId, setMergeId] = useState(null);
+    const [mergeStatus, setMergeStatus] = useState(null);
+    const [merging, setMerging] = useState(false);
+    const [mergeResult, setMergeResult] = useState(null);
+    const [dragIdx, setDragIdx] = useState(null);
+
+    // Load completed jobs that have video URLs
+    useEffect(() => {
+        async function load() {
+            try {
+                const res = await fetch('/api/jobs?limit=50');
+                const data = await res.json();
+                if (data.success) {
+                    const withVideo = data.jobs.filter(j => j.raw_video_url || j.final_video_url);
+                    setCompletedJobs(withVideo);
+                }
+            } catch (e) { console.error(e); }
+        }
+        load();
+        const id = setInterval(load, 15000);
+        return () => clearInterval(id);
+    }, []);
+
+    // Poll merge status
+    useEffect(() => {
+        if (!mergeId) return;
+        const poll = setInterval(async () => {
+            try {
+                const res = await fetch(`/api/merge/${mergeId}`);
+                const data = await res.json();
+                if (data.success) {
+                    setMergeStatus(data.merge.status);
+                    if (data.merge.status === 'done') {
+                        setMergeResult(data.merge);
+                        setMerging(false);
+                        addToast('Ghép video hoàn tất! 🎬', 'success');
+                        clearInterval(poll);
+                    } else if (data.merge.status === 'failed') {
+                        setMerging(false);
+                        addToast(data.merge.error_message || 'Ghép video thất bại', 'error');
+                        clearInterval(poll);
+                    }
+                }
+            } catch (e) { console.error(e); }
+        }, 3000);
+        return () => clearInterval(poll);
+    }, [mergeId]);
+
+    function toggleSelect(jobId) {
+        setSelectedIds(prev => {
+            if (prev.includes(jobId)) return prev.filter(id => id !== jobId);
+            if (prev.length >= 5) { addToast('Tối đa 5 video', 'error'); return prev; }
+            return [...prev, jobId];
+        });
+    }
+
+    function moveItem(fromIdx, toIdx) {
+        setSelectedIds(prev => {
+            const arr = [...prev];
+            const [item] = arr.splice(fromIdx, 1);
+            arr.splice(toIdx, 0, item);
+            return arr;
+        });
+    }
+
+    function handleDragStart(e, idx) {
+        setDragIdx(idx);
+        e.dataTransfer.effectAllowed = 'move';
+    }
+    function handleDragOver(e, idx) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+    }
+    function handleDrop(e, toIdx) {
+        e.preventDefault();
+        if (dragIdx !== null && dragIdx !== toIdx) moveItem(dragIdx, toIdx);
+        setDragIdx(null);
+    }
+
+    async function handleMerge() {
+        if (selectedIds.length === 0) { addToast('Chọn ít nhất 1 video', 'error'); return; }
+        setMerging(true);
+        setMergeResult(null);
+        setMergeStatus('queued');
+        try {
+            const res = await fetch('/api/merge', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    job_ids: selectedIds,
+                    tiktok_url: tiktokUrl.trim() || null,
+                }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                setMergeId(data.merge.id);
+                addToast(`Merge job #${data.merge.id} đang xử lý...`, 'info');
+            } else {
+                addToast(data.detail || 'Không thể tạo merge job', 'error');
+                setMerging(false);
+                setMergeStatus(null);
+            }
+        } catch (e) {
+            addToast('Lỗi kết nối server', 'error');
+            setMerging(false);
+            setMergeStatus(null);
+        }
+    }
+
+    function resetMerge() {
+        setSelectedIds([]);
+        setTiktokUrl('');
+        setMergeId(null);
+        setMergeStatus(null);
+        setMergeResult(null);
+        setMerging(false);
+    }
+
+    const statusLabels = {
+        queued: '⏳ Đang chờ...',
+        extracting_audio: '🎵 Trích xuất audio TikTok...',
+        downloading: '⬇️ Tải video nguồn...',
+        merging: '🎬 Đang ghép video + audio...',
+        uploading: '☁️ Đang upload kết quả...',
+        done: '✅ Hoàn tất!',
+        failed: '❌ Thất bại',
+    };
+
+    const selectedJobs = selectedIds.map(id => completedJobs.find(j => j.id === id)).filter(Boolean);
+
+    return (
+        <div className="card" id="merge-card">
+            <div className="card-header">
+                <span className="phase-badge phase-badge-merge">Phase 5</span>
+                <h3>🎬 Post-Production (Ghép Video)</h3>
+            </div>
+
+            {/* Video Selector */}
+            <div className="form-group">
+                <label>Chọn video để ghép (tối đa 5, nhấn để chọn)</label>
+                <div className="merge-video-grid">
+                    {completedJobs.length === 0 ? (
+                        <div className="merge-empty">Chưa có video nào hoàn thành. Tạo video ở Phase 1-2 trước.</div>
+                    ) : completedJobs.map(job => (
+                        <div
+                            key={job.id}
+                            className={`merge-video-card ${selectedIds.includes(job.id) ? 'selected' : ''}`}
+                            onClick={() => toggleSelect(job.id)}
+                        >
+                            <div className="merge-video-thumb">
+                                {job.thumbnail_url
+                                    ? <img src={job.thumbnail_url} alt="" />
+                                    : <div className="merge-thumb-placeholder">🎥</div>
+                                }
+                                {selectedIds.includes(job.id) && (
+                                    <div className="merge-check">
+                                        <span>{selectedIds.indexOf(job.id) + 1}</span>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="merge-video-info">
+                                <div className="merge-video-title">#{job.id} {(job.title || '').slice(0, 30)}</div>
+                                <div className="merge-video-meta">{job.model} · {formatTime(job.created_at)}</div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Selected Order (Drag & Drop) */}
+            {selectedIds.length > 0 && (
+                <div className="form-group">
+                    <label>Thứ tự ghép (kéo thả để sắp xếp)</label>
+                    <div className="merge-order-list">
+                        {selectedJobs.map((job, idx) => (
+                            <div
+                                key={job.id}
+                                className={`merge-order-item ${dragIdx === idx ? 'dragging' : ''}`}
+                                draggable
+                                onDragStart={(e) => handleDragStart(e, idx)}
+                                onDragOver={(e) => handleDragOver(e, idx)}
+                                onDrop={(e) => handleDrop(e, idx)}
+                                onDragEnd={() => setDragIdx(null)}
+                            >
+                                <span className="merge-drag-handle">⠿</span>
+                                <span className="merge-order-num">{idx + 1}</span>
+                                <span className="merge-order-title">#{job.id} — {(job.title || 'Video').slice(0, 40)}</span>
+                                <button className="merge-order-remove" onClick={(e) => { e.stopPropagation(); toggleSelect(job.id); }}>✕</button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* TikTok URL */}
+            <div className="form-group">
+                <label>Link TikTok (trích xuất âm thanh)</label>
+                <div className="input-group">
+                    <span className="input-icon">🎵</span>
+                    <input
+                        type="text"
+                        className="form-input"
+                        placeholder="https://www.tiktok.com/@user/video/1234567890..."
+                        value={tiktokUrl}
+                        onChange={e => setTiktokUrl(e.target.value)}
+                        disabled={merging}
+                    />
+                </div>
+                <div className="form-hint">Âm thanh từ TikTok sẽ thay thế hoàn toàn audio gốc của video</div>
+            </div>
+
+            {/* Action Button */}
+            <button
+                className={`btn btn-lg w-full ${mergeResult ? 'btn-outline' : 'btn-accent'}`}
+                onClick={mergeResult ? resetMerge : handleMerge}
+                disabled={merging || (selectedIds.length === 0 && !mergeResult)}
+                style={{ marginTop: '0.5rem' }}
+            >
+                {merging && <span className="spinner"></span>}
+                {mergeResult ? '🔄 Ghép video mới' : `🎬 Ghép ${selectedIds.length} video`}
+            </button>
+
+            {/* Merge Status */}
+            {mergeStatus && mergeStatus !== 'done' && mergeStatus !== 'failed' && (
+                <div className="merge-status-bar">
+                    <div className="sheet-progress-bar">
+                        <div className="sheet-progress-fill" style={{
+                            width: mergeStatus === 'queued' ? '10%'
+                                : mergeStatus === 'extracting_audio' ? '30%'
+                                : mergeStatus === 'downloading' ? '50%'
+                                : mergeStatus === 'merging' ? '75%'
+                                : mergeStatus === 'uploading' ? '90%' : '100%'
+                        }}></div>
+                    </div>
+                    <div className="sheet-progress-text">{statusLabels[mergeStatus] || mergeStatus}</div>
+                </div>
+            )}
+
+            {/* Merge Result */}
+            {mergeResult && mergeResult.merged_video_url && (
+                <div className="merge-result">
+                    <div className="merge-result-header">
+                        <h4>✅ Video đã ghép xong</h4>
+                        <a href={mergeResult.merged_video_url} target="_blank" download className="btn btn-success btn-sm">
+                            ⬇ Tải video
+                        </a>
+                    </div>
+                    <div className="merge-result-player">
+                        <video
+                            controls
+                            src={mergeResult.merged_video_url}
+                            style={{ width: '100%', maxHeight: '500px', borderRadius: 'var(--radius-lg)' }}
+                        ></video>
+                    </div>
+                </div>
+            )}
+
+            {mergeStatus === 'failed' && (
+                <div className="merge-error">
+                    <strong>❌ Ghép video thất bại</strong>
+                    <p>Vui lòng kiểm tra lại link TikTok hoặc thử lại.</p>
+                    <button className="btn btn-outline btn-sm" onClick={resetMerge}>Thử lại</button>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// =============================================
 // Dashboard Page
 // =============================================
 
@@ -808,6 +1084,8 @@ function DashboardPage({ addToast, setLoading }) {
                 setLoading={setLoading}
                 onJobCreated={() => setJobRefresh(prev => prev + 1)}
             />
+
+            <MergePanel addToast={addToast} />
 
             <JobsTable refreshKey={jobRefresh} />
         </div>

@@ -11,6 +11,8 @@ API Endpoints:
   GET  /api/jobs/{id}        Job detail
   POST /api/jobs/{id}/approve   Approve a pending video
   POST /api/jobs/{id}/reject    Reject with reason
+  POST /api/merge            Phase 5: Merge videos + TikTok audio
+  GET  /api/merge/{id}       Merge job status
 
   GET  /               React SPA Dashboard
   GET  /admin           React SPA Review page
@@ -33,11 +35,12 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.database import get_db, init_db
-from app.core.models import VideoJob, JobLog, JobStatus
+from app.core.models import VideoJob, JobLog, JobStatus, MergeJob, MergeStatus
 from app.services.scraper import scrape_article, generate_script_with_llm
 from app.services.storage import upload_file_to_r2
 from app.services.google_sheet import read_sheet_links, update_link_status, parse_sheet_url
-from app.worker.tasks import process_video_pipeline
+from app.services.tiktok_audio import validate_tiktok_url
+from app.worker.tasks import process_video_pipeline, process_merge_pipeline
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -444,3 +447,71 @@ async def api_reject_job(job_id: int, req: RejectRequest, db: Session = Depends(
     logger.info(f"[API] Job {job_id} rejected: {req.reason}")
 
     return {"success": True, "job": job.to_dict()}
+
+
+# =============================================
+# Phase 5: Merge Videos + TikTok Audio
+# =============================================
+
+class MergeRequest(BaseModel):
+    job_ids: list[int]         # Video job IDs to merge (max 5, in order)
+    tiktok_url: str = None     # Optional TikTok URL for audio extraction
+
+
+@app.post("/api/merge")
+def submit_merge(req: MergeRequest, db: Session = Depends(get_db)):
+    """Submit a merge job: combine selected videos + optional TikTok audio."""
+    # Validate
+    if not req.job_ids:
+        raise HTTPException(status_code=400, detail="Chọn ít nhất 1 video để ghép")
+    if len(req.job_ids) > 5:
+        raise HTTPException(status_code=400, detail="Tối đa 5 video")
+    if len(req.job_ids) != len(set(req.job_ids)):
+        raise HTTPException(status_code=400, detail="Có video bị trùng")
+
+    # Check TikTok URL
+    if req.tiktok_url and req.tiktok_url.strip():
+        if not validate_tiktok_url(req.tiktok_url.strip()):
+            raise HTTPException(status_code=400, detail="Link TikTok không hợp lệ")
+
+    # Verify all source jobs exist and have video
+    for job_id in req.job_ids:
+        job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Video job #{job_id} không tìm thấy")
+        if not (job.raw_video_url or job.final_video_url):
+            raise HTTPException(status_code=400, detail=f"Video job #{job_id} chưa có video")
+
+    # Create merge job
+    merge = MergeJob(
+        source_job_ids=req.job_ids,
+        tiktok_url=req.tiktok_url.strip() if req.tiktok_url else None,
+        status=MergeStatus.QUEUED,
+    )
+    db.add(merge)
+    db.commit()
+    db.refresh(merge)
+
+    # Dispatch to Celery
+    task = process_merge_pipeline.delay(merge.id)
+    merge.celery_task_id = task.id
+    db.commit()
+
+    logger.info(f"[API] Merge job #{merge.id} created: jobs={req.job_ids}, tiktok={req.tiktok_url}")
+    return {"success": True, "merge": merge.to_dict()}
+
+
+@app.get("/api/merge/{merge_id}")
+def get_merge_status(merge_id: int, db: Session = Depends(get_db)):
+    """Get merge job status."""
+    merge = db.query(MergeJob).filter(MergeJob.id == merge_id).first()
+    if not merge:
+        raise HTTPException(status_code=404, detail="Merge job not found")
+    return {"success": True, "merge": merge.to_dict()}
+
+
+@app.get("/api/merges")
+def list_merges(limit: int = 20, db: Session = Depends(get_db)):
+    """List recent merge jobs."""
+    merges = db.query(MergeJob).order_by(MergeJob.id.desc()).limit(limit).all()
+    return {"success": True, "merges": [m.to_dict() for m in merges]}

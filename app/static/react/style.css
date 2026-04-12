@@ -1067,3 +1067,274 @@ h3 { font-size: 1.125rem; }
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
 }
+
+/* --- Merge Panel (Phase 5: Post-Production) --- */
+
+.phase-badge-merge {
+    background: linear-gradient(135deg, #7c3aed, #a855f7);
+    color: #fff;
+}
+
+.merge-video-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 0.75rem;
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 0.5rem;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    background: var(--bg-secondary);
+}
+
+.merge-empty {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 2rem;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.merge-video-card {
+    border: 2px solid var(--border-light);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    cursor: pointer;
+    transition: var(--transition);
+    background: var(--bg-primary);
+}
+
+.merge-video-card:hover {
+    border-color: var(--accent-primary);
+    box-shadow: var(--shadow-sm);
+    transform: translateY(-2px);
+}
+
+.merge-video-card.selected {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+}
+
+.merge-video-thumb {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 9/16;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.merge-video-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.merge-thumb-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2rem;
+    background: var(--bg-tertiary);
+}
+
+.merge-check {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+    box-shadow: var(--shadow-md);
+    animation: fadeIn 0.2s ease;
+}
+
+.merge-video-info {
+    padding: 0.5rem;
+}
+
+.merge-video-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.merge-video-meta {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+/* Drag & Drop Reorder List */
+.merge-order-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.merge-order-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    cursor: grab;
+    transition: var(--transition);
+    user-select: none;
+}
+
+.merge-order-item:hover {
+    border-color: var(--accent-primary);
+    box-shadow: var(--shadow-sm);
+}
+
+.merge-order-item.dragging {
+    opacity: 0.5;
+    border-color: var(--accent-primary);
+    background: var(--accent-primary-light);
+    border-style: dashed;
+}
+
+.merge-drag-handle {
+    color: var(--text-muted);
+    font-size: 1.2rem;
+    cursor: grab;
+    line-height: 1;
+}
+
+.merge-order-num {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--gradient-accent);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+
+.merge-order-title {
+    flex: 1;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.merge-order-remove {
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: var(--accent-danger-light);
+    color: var(--accent-danger);
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 0.7rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+    flex-shrink: 0;
+}
+
+.merge-order-remove:hover {
+    background: var(--accent-danger);
+    color: #fff;
+}
+
+/* Merge Status */
+.merge-status-bar {
+    margin-top: 1rem;
+    animation: fadeIn 0.3s ease;
+}
+
+/* Merge Result */
+.merge-result {
+    margin-top: 1.25rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--accent-secondary);
+    border-radius: var(--radius-xl);
+    padding: 1.25rem;
+    animation: fadeIn 0.3s ease;
+}
+
+.merge-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.merge-result-header h4 {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--accent-secondary);
+}
+
+.merge-result-player {
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    background: #000;
+}
+
+.merge-result-player video {
+    display: block;
+}
+
+/* Merge Error */
+.merge-error {
+    margin-top: 1rem;
+    padding: 1.25rem;
+    background: var(--accent-danger-light);
+    border: 1px solid var(--accent-danger);
+    border-radius: var(--radius-lg);
+    text-align: center;
+    animation: fadeIn 0.3s ease;
+}
+
+.merge-error strong {
+    display: block;
+    color: var(--accent-danger);
+    margin-bottom: 0.5rem;
+}
+
+.merge-error p {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-bottom: 0.75rem;
+}
+
+/* Accent button variant */
+.btn-accent {
+    background: linear-gradient(135deg, #7c3aed, #a855f7);
+    color: #fff;
+    border: none;
+}
+
+.btn-accent:hover {
+    background: linear-gradient(135deg, #6d28d9, #9333ea);
+    box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);
+}
+
+.btn-accent:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

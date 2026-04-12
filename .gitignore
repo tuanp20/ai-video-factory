@@ -41,3 +41,10 @@ celerybeat.pid
 
 # Logs
 *.log
+
+# Uploaded media (local storage)
+app/static/uploads/
+
+# Debug files
+reproduce_*.py
+shopee_*.png
