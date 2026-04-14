@@ -816,6 +816,7 @@ function DriveTabContent({ addToast, onImportedImages, nodeCount, nodeLabels }) 
     const [selected, setSelected] = useState([]);
     const [importing, setImporting] = useState(false);
     const [importedImages, setImportedImages] = useState([]);
+    const [targetNodeIdx, setTargetNodeIdx] = useState('auto');
 
     async function handlePreview() {
         if (!driveUrl.trim()) { addToast('Vui lòng dán link folder Google Drive', 'error'); return; }
@@ -870,10 +871,11 @@ function DriveTabContent({ addToast, onImportedImages, nodeCount, nodeLabels }) 
             if (data.success) {
                 const successResults = (data.results || []).filter(r => r.success && r.image_url);
                 addToast(`Import thành công ${successResults.length}/${data.total} ảnh`, 'success');
-                setImportedImages(successResults);
+                const finalResults = successResults.map(r => ({ url: r.image_url, name: r.file_name || 'Drive Image', targetNodeIdx: targetNodeIdx }));
+                setImportedImages(finalResults);
                 // Auto pass all imported images to parent
-                if (onImportedImages && successResults.length > 0) {
-                    onImportedImages(successResults.map(r => ({ url: r.image_url, name: r.file_name || 'Drive Image' })));
+                if (onImportedImages && finalResults.length > 0) {
+                    onImportedImages(finalResults);
                 }
                 handlePreview(); // Refresh status
             } else {
@@ -914,10 +916,19 @@ function DriveTabContent({ addToast, onImportedImages, nodeCount, nodeLabels }) 
                             <button className="btn btn-outline btn-sm" onClick={selected.length === pendingCount ? deselectAll : selectAll}>
                                 {selected.length === pendingCount && pendingCount > 0 ? '☐ Bỏ chọn tất cả' : `☑ Chọn tất cả (${pendingCount})`}
                             </button>
-                            <button className="btn btn-success btn-sm" disabled={importing || selected.length === 0} onClick={handleImport} id="drive-import-btn">
-                                {importing && <span className="spinner"></span>}
-                                ⬇️ Import {selected.length} ảnh → Workflow
-                            </button>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                <select className="form-select" style={{ fontSize: '0.8rem', padding: '0.2rem 1.5rem 0.2rem 0.5rem', width: 'auto', border: '1px solid var(--accent-secondary)' }} value={targetNodeIdx} onChange={e => setTargetNodeIdx(e.target.value)}>
+                                    <option value="auto">Gán Auto</option>
+                                    {Array.from({ length: Math.max(1, nodeCount || 1) }).map((_, i) => (
+                                        <option key={i} value={i}>Vào Node {i + 1}</option>
+                                    ))}
+                                    {nodeCount < 10 && <option value={nodeCount}>Vào Node Mới</option>}
+                                </select>
+                                <button className="btn btn-success btn-sm" disabled={importing || selected.length === 0} onClick={handleImport} id="drive-import-btn">
+                                    {importing && <span className="spinner"></span>}
+                                    ⬇️ Import {selected.length} ảnh
+                                </button>
+                            </div>
                         </div>
                     </div>
                     <div className="drive-grid">
@@ -948,7 +959,7 @@ function DriveTabContent({ addToast, onImportedImages, nodeCount, nodeLabels }) 
                             <div key={i} className="drive-imported-item">
                                 <img src={img.url} alt={img.name} className="drive-imported-thumb" />
                                 <div className="drive-imported-label">
-                                    <span className="drive-imported-node">Node {i + 1}</span>
+                                    <span className="drive-imported-node">Node {(img.targetNodeIdx === 'auto' ? i : parseInt(img.targetNodeIdx) + i) + 1}</span>
                                     <span className="drive-imported-name">{img.name}</span>
                                 </div>
                             </div>
@@ -1002,26 +1013,33 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
     function handleDriveImported(images) {
         setDriveImages(images);
         // Auto-assign to Builder nodes
+        const startParam = images[0]?.targetNodeIdx || 'auto';
         setNodes(prev => {
-            // Ensure enough nodes exist for all images
             let updated = [...prev];
-            while (updated.length < images.length && updated.length < 10) {
+            let startIdx = 0;
+            if (startParam !== 'auto') {
+                startIdx = parseInt(startParam);
+            }
+            
+            // Ensure enough nodes exist for all images
+            while (updated.length < startIdx + images.length && updated.length < 10) {
                 updated.push(defaultNode());
             }
             // Assign image URLs to nodes
-            return updated.map((n, i) => {
-                if (i < images.length) {
-                    return { ...n, image_url: images[i].url };
-                }
-                return n;
+            images.forEach((img, i) => {
+                 if (startIdx + i < updated.length) {
+                     updated[startIdx + i] = { ...updated[startIdx + i], image_url: img.url };
+                 }
             });
+            return updated;
         });
         // Also assign to Runner images if a workflow is selected
         if (selectedWf) {
             setRunnerImages(prev => {
                 const updated = [...prev];
                 images.forEach((img, i) => {
-                    if (i < updated.length) updated[i] = img.url;
+                    const idx = startParam === 'auto' ? i : parseInt(startParam) + i;
+                    if (idx < updated.length) updated[idx] = img.url;
                 });
                 return updated;
             });
