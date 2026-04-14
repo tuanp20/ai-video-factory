@@ -1,0 +1,13 @@
+{
+  "workflow_id": "default",
+  "name": "Default Pipeline",
+  "description": "Backward-compatible: Image → Video generation (same as original pipeline logic)",
+  "required_inputs": ["prompt"],
+  "optional_inputs": ["image_url"],
+  "steps": [
+    {
+      "step": "video_gen",
+      "params": {}
+    }
+  ]
+}

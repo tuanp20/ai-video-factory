@@ -68,6 +68,12 @@ function Navbar({ currentPage, onNavigate }) {
                         Dashboard
                     </a>
                     <a
+                        className={currentPage === 'workflow-builder' ? 'active' : ''}
+                        onClick={() => onNavigate('workflow-builder')}
+                    >
+                        🔨 Workflow
+                    </a>
+                    <a
                         className={currentPage === 'review' ? 'active' : ''}
                         onClick={() => onNavigate('review')}
                     >
@@ -241,6 +247,7 @@ function ScrapePanel({ onScrapeResult, addToast, setLoading }) {
                 <button className={`tab-btn ${activeTab === 'single' ? 'active' : ''}`} onClick={() => setActiveTab('single')}>Đơn lẻ (Single)</button>
                 <button className={`tab-btn ${activeTab === 'bulk' ? 'active' : ''}`} onClick={() => setActiveTab('bulk')}>Hàng loạt (Bulk)</button>
                 <button className={`tab-btn ${activeTab === 'sheet' ? 'active' : ''}`} onClick={() => setActiveTab('sheet')}>📊 Google Sheet</button>
+                <button className={`tab-btn ${activeTab === 'drive' ? 'active' : ''}`} onClick={() => setActiveTab('drive')}>📁 Google Drive</button>
             </div>
 
             {activeTab === 'single' && (
@@ -434,6 +441,11 @@ function ScrapePanel({ onScrapeResult, addToast, setLoading }) {
                 </div>
             )}
 
+            {/* ===== Google Drive Tab ===== */}
+            {activeTab === 'drive' && (
+                <DriveTabContent addToast={addToast} onSelectImage={(url) => { onScrapeResult({ image_url: url, title: '', script: '', video_prompts: [] }); }} />
+            )}
+
             {/* Single Result */}
             {result && activeTab === 'single' && (
                 <div className="result-box show">
@@ -519,6 +531,21 @@ function SubmitPanel({ prefill, addToast, setLoading, onJobCreated }) {
     const [preview, setPreview] = useState('');
     const [submitting, setSubmitting] = useState(false);
 
+    // Workflow state
+    const [workflows, setWorkflows] = useState([]);
+    const [workflowId, setWorkflowId] = useState('default');
+    const [personImageUrl, setPersonImageUrl] = useState('');
+    const [personPreview, setPersonPreview] = useState('');
+    const [bgImageUrl, setBgImageUrl] = useState('');
+    const [bgPreview, setBgPreview] = useState('');
+
+    // Load available workflows
+    useEffect(() => {
+        fetch('/api/workflows').then(r => r.json()).then(data => {
+            if (data.success) setWorkflows(data.workflows);
+        }).catch(() => {});
+    }, []);
+
     // Prefill from scrape
     useEffect(() => {
         if (prefill) {
@@ -543,28 +570,25 @@ function SubmitPanel({ prefill, addToast, setLoading, onJobCreated }) {
         }
     }
 
-    async function handleFileUpload(e) {
-        const file = e.target.files[0];
+    async function uploadImage(file, setUrl, setPreviewFn, label) {
         if (!file || !file.type.startsWith('image/')) {
             addToast('Chỉ chấp nhận file ảnh', 'error');
             return;
         }
-        // Preview
         const reader = new FileReader();
-        reader.onload = (ev) => setPreview(ev.target.result);
+        reader.onload = (ev) => setPreviewFn(ev.target.result);
         reader.readAsDataURL(file);
-        // Upload
-        setLoading(true, 'Đang upload ảnh...');
+        setLoading(true, `Đang upload ${label}...`);
         const formData = new FormData();
         formData.append('file', file);
         try {
             const res = await fetch('/api/upload', { method: 'POST', body: formData });
             const data = await res.json();
             if (data.success) {
-                setImageUrl(data.url);
-                addToast(`Upload thành công: ${(data.size / 1024).toFixed(0)} KB`, 'success');
+                setUrl(data.url);
+                addToast(`Upload ${label} thành công: ${(data.size / 1024).toFixed(0)} KB`, 'success');
             } else {
-                addToast(data.detail || 'Upload thất bại', 'error');
+                addToast(data.detail || `Upload ${label} thất bại`, 'error');
             }
         } catch (e) {
             addToast('Lỗi upload', 'error');
@@ -573,8 +597,33 @@ function SubmitPanel({ prefill, addToast, setLoading, onJobCreated }) {
         }
     }
 
+    function handleFileUpload(e) {
+        uploadImage(e.target.files[0], setImageUrl, setPreview, 'ảnh nguồn');
+    }
+    function handlePersonUpload(e) {
+        uploadImage(e.target.files[0], setPersonImageUrl, setPersonPreview, 'ảnh nhân vật');
+    }
+    function handleBgUpload(e) {
+        uploadImage(e.target.files[0], setBgImageUrl, setBgPreview, 'ảnh background');
+    }
+
     async function handleSubmit() {
         if (!prompt.trim()) { addToast('Vui lòng nhập prompt tạo video', 'error'); return; }
+
+        // Validate required inputs for selected workflow
+        const wf = workflows.find(w => w.id === workflowId);
+        if (wf && wf.required_inputs) {
+            if (wf.required_inputs.includes('image_url') && !imageUrl) {
+                addToast('Workflow này yêu cầu ảnh nguồn', 'error'); return;
+            }
+            if (wf.required_inputs.includes('person_image_url') && !personImageUrl) {
+                addToast('Workflow này yêu cầu ảnh nhân vật', 'error'); return;
+            }
+            if (wf.required_inputs.includes('background_image_url') && !bgImageUrl) {
+                addToast('Workflow này yêu cầu ảnh background', 'error'); return;
+            }
+        }
+
         setSubmitting(true);
         try {
             const res = await fetch('/api/submit', {
@@ -583,8 +632,11 @@ function SubmitPanel({ prefill, addToast, setLoading, onJobCreated }) {
                 body: JSON.stringify({
                     title: title || 'Video Job',
                     image_url: imageUrl || null,
+                    person_image_url: personImageUrl || null,
+                    background_image_url: bgImageUrl || null,
                     prompt: prompt.trim(),
                     script_text: script || null,
+                    workflow_id: workflowId,
                     model, mode, quality,
                     duration: parseInt(duration) || 5,
                     aspect_ratio: ratio,
@@ -592,7 +644,7 @@ function SubmitPanel({ prefill, addToast, setLoading, onJobCreated }) {
             });
             const data = await res.json();
             if (data.success) {
-                addToast(`Job #${data.job.id} đã được đưa vào hàng đợi! 🚀`, 'success');
+                addToast(`Job #${data.job.id} (${workflowId}) đã được đưa vào hàng đợi! 🚀`, 'success');
                 onJobCreated();
                 setPrompt('');
                 setScript('');
@@ -607,6 +659,10 @@ function SubmitPanel({ prefill, addToast, setLoading, onJobCreated }) {
         }
     }
 
+    const selectedWf = workflows.find(w => w.id === workflowId);
+    const needsPerson = selectedWf && selectedWf.required_inputs && selectedWf.required_inputs.includes('person_image_url');
+    const needsBg = selectedWf && selectedWf.required_inputs && selectedWf.required_inputs.includes('background_image_url');
+
     const modeOptions = model === 'veo-3-fast'
         ? [['t2v', 'Text-to-Video'], ['i2v', 'Image-to-Video'], ['r2v', 'Reference-to-Video']]
         : [['i2v', 'Image-to-Video']];
@@ -618,9 +674,29 @@ function SubmitPanel({ prefill, addToast, setLoading, onJobCreated }) {
                 <h3>🎬 Tạo Video (Input & Submit)</h3>
             </div>
 
+            {/* Workflow Selector */}
+            <div className="form-group">
+                <label>🔀 Workflow</label>
+                <select className="form-select" value={workflowId} onChange={e => setWorkflowId(e.target.value)} id="workflow-select">
+                    {workflows.map(wf => (
+                        <option key={wf.id} value={wf.id}>{wf.name} ({wf.steps.length} steps)</option>
+                    ))}
+                </select>
+                {selectedWf && selectedWf.description && (
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.35rem', padding: '0.5rem 0.75rem', background: 'var(--bg-secondary)', borderRadius: 8 }}>
+                        📋 {selectedWf.description}
+                        <div style={{ marginTop: '0.25rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                            {selectedWf.steps.map((s, i) => (
+                                <span key={i} style={{ background: 'var(--accent-primary)', color: '#fff', padding: '2px 8px', borderRadius: 12, fontSize: '0.7rem' }}>{s}</span>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+
             {/* Upload Image */}
             <div className="form-group">
-                <label>Ảnh nguồn (Start Frame cho I2V)</label>
+                <label>🖼️ Ảnh nguồn (Start Frame)</label>
                 <div className="dropzone" style={{ position: 'relative' }}>
                     <input type="file" accept="image/*" onChange={handleFileUpload} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
                     {preview
@@ -632,6 +708,40 @@ function SubmitPanel({ prefill, addToast, setLoading, onJobCreated }) {
                     }
                 </div>
             </div>
+
+            {/* Person Image — shown for workflows that need it */}
+            {needsPerson && (
+                <div className="form-group">
+                    <label>👤 Ảnh nhân vật (Person)</label>
+                    <div className="dropzone" style={{ position: 'relative' }}>
+                        <input type="file" accept="image/*" onChange={handlePersonUpload} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
+                        {personPreview
+                            ? <div className="dropzone-preview"><img src={personPreview} alt="Person" /></div>
+                            : <>
+                                <div className="dropzone-icon">👤</div>
+                                <div className="dropzone-text">Upload ảnh nhân vật <strong>(sẽ được ghép vào video)</strong></div>
+                            </>
+                        }
+                    </div>
+                </div>
+            )}
+
+            {/* Background Image — shown for workflows that need it */}
+            {needsBg && (
+                <div className="form-group">
+                    <label>🏞️ Ảnh Background</label>
+                    <div className="dropzone" style={{ position: 'relative' }}>
+                        <input type="file" accept="image/*" onChange={handleBgUpload} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
+                        {bgPreview
+                            ? <div className="dropzone-preview"><img src={bgPreview} alt="Background" /></div>
+                            : <>
+                                <div className="dropzone-icon">🏞️</div>
+                                <div className="dropzone-text">Upload ảnh nền <strong>(background cho scene)</strong></div>
+                            </>
+                        }
+                    </div>
+                </div>
+            )}
 
             {/* Config Grid */}
             <div className="form-row">
@@ -700,6 +810,529 @@ function SubmitPanel({ prefill, addToast, setLoading, onJobCreated }) {
 }
 
 // =============================================
+// Google Drive Tab Content
+// =============================================
+
+function DriveTabContent({ addToast, onSelectImage }) {
+    const [driveUrl, setDriveUrl] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [driveData, setDriveData] = useState(null);
+    const [selected, setSelected] = useState([]);
+    const [importing, setImporting] = useState(false);
+
+    async function handlePreview() {
+        if (!driveUrl.trim()) { addToast('Vui lòng dán link folder Google Drive', 'error'); return; }
+        if (!driveUrl.includes('drive.google.com')) { addToast('Link không hợp lệ', 'error'); return; }
+        setLoading(true);
+        setDriveData(null);
+        setSelected([]);
+        try {
+            const res = await fetch('/api/drive/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ folder_url: driveUrl.trim() }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                setDriveData(data);
+                addToast(`Tìm thấy ${data.total_images} ảnh — ${data.pending} chưa xử lý`, 'success');
+            } else {
+                addToast(data.detail || 'Không thể đọc folder', 'error');
+            }
+        } catch (e) {
+            addToast('Lỗi kết nối server', 'error');
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    function toggleSelect(fileId) {
+        setSelected(prev => prev.includes(fileId) ? prev.filter(id => id !== fileId) : [...prev, fileId]);
+    }
+
+    async function handleImport() {
+        if (selected.length === 0) { addToast('Chọn ít nhất 1 ảnh', 'error'); return; }
+        setImporting(true);
+        try {
+            const formData = new FormData();
+            formData.append('folder_url', driveUrl.trim());
+            formData.append('file_ids', selected.join(','));
+            const res = await fetch('/api/drive/import', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.success) {
+                addToast(`Import thành công ${data.imported}/${data.total} ảnh`, 'success');
+                // Use the first imported image
+                const firstOk = data.results.find(r => r.success && r.image_url);
+                if (firstOk) onSelectImage(firstOk.image_url);
+                handlePreview(); // Refresh
+            } else {
+                addToast(data.detail || 'Lỗi import', 'error');
+            }
+        } catch (e) {
+            addToast('Lỗi kết nối', 'error');
+        } finally {
+            setImporting(false);
+        }
+    }
+
+    const statusColors = { pending: { bg: '#eef4ff', color: '#155eef' }, done: { bg: '#e6f9f0', color: '#067647' }, processing: { bg: '#fff8e6', color: '#b54708' }, failed: { bg: '#fef3f2', color: '#b42318' } };
+
+    return (
+        <div>
+            <div className="form-group">
+                <label>Link folder Google Drive</label>
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                    <input type="text" className="form-input" placeholder="https://drive.google.com/drive/folders/xxxxx" value={driveUrl} onChange={e => setDriveUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && handlePreview()} style={{ flex: 1 }} />
+                    <button className="btn btn-primary" disabled={loading} onClick={handlePreview}>
+                        {loading && <span className="spinner"></span>}
+                        🔍 Preview
+                    </button>
+                </div>
+                <div className="sheet-hint">Folder cần được share với email Service Account: ai-video-factory@xuongmedia-v3.iam.gserviceaccount.com</div>
+            </div>
+
+            {driveData && (
+                <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                        <div>
+                            <strong>📁 {driveData.folder_name}</strong>
+                            <span className="text-muted" style={{ fontSize: '0.8rem', marginLeft: '0.5rem' }}>{driveData.total_images} ảnh · {driveData.pending} chưa xử lý · {driveData.done} đã xong</span>
+                        </div>
+                        <button className="btn btn-success btn-sm" disabled={importing || selected.length === 0} onClick={handleImport}>
+                            {importing && <span className="spinner"></span>}
+                            ⬇️ Import {selected.length} ảnh
+                        </button>
+                    </div>
+                    <div className="drive-grid">
+                        {driveData.images.map(img => {
+                            const st = statusColors[img.status] || statusColors.pending;
+                            const isSelected = selected.includes(img.drive_file_id);
+                            return (
+                                <div key={img.drive_file_id} className={`drive-img-card ${isSelected ? 'selected' : ''} ${img.status === 'done' ? 'done' : ''}`} onClick={() => img.status !== 'done' && toggleSelect(img.drive_file_id)}>
+                                    {img.thumbnail_url ? <img className="drive-img-thumb" src={img.thumbnail_url} alt="" /> : <div className="drive-img-thumb" style={{ background: 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem' }}>🖼️</div>}
+                                    <div className="drive-img-name">{img.file_name}</div>
+                                    <span className="drive-img-status" style={{ background: st.bg, color: st.color }}>{img.status === 'pending' ? '🟢' : img.status === 'done' ? '✅' : img.status === 'processing' ? '⚡' : '❌'} {img.status}</span>
+                                    {isSelected && <span className="drive-img-check">✓</span>}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// =============================================
+// Workflow Builder Page (Luồng 1 + Luồng 2)
+// =============================================
+
+function defaultNode() {
+    return { model: 'kling-3.0', mode: 'i2v', quality: '1080p', duration: 5, aspect_ratio: '9:16', prompt: '', script_text: '', image_url: '' };
+}
+
+function WorkflowBuilderPage({ addToast, setLoading }) {
+    const [activeTab, setActiveTab] = useState('builder');
+    // --- Builder state (Luồng 1) ---
+    const [nodes, setNodes] = useState([defaultNode()]);
+    const [running, setRunning] = useState(false);
+    const [jobResult, setJobResult] = useState(null);
+    // Save modal
+    const [showSave, setShowSave] = useState(false);
+    const [saveName, setSaveName] = useState('');
+    const [saveDesc, setSaveDesc] = useState('');
+    const [saving, setSaving] = useState(false);
+    // --- Runner state (Luồng 2) ---
+    const [savedWfs, setSavedWfs] = useState([]);
+    const [selectedWf, setSelectedWf] = useState(null);
+    const [runnerImages, setRunnerImages] = useState([]);
+    const [runnerRunning, setRunnerRunning] = useState(false);
+    const [runnerTitle, setRunnerTitle] = useState('');
+
+    // Load saved workflows
+    useEffect(() => {
+        fetch('/api/custom-workflows').then(r => r.json()).then(data => {
+            if (data.success) setSavedWfs(data.workflows);
+        }).catch(() => {});
+    }, [activeTab]);
+
+    // --- Builder helpers ---
+    function updateNode(idx, field, value) {
+        setNodes(prev => prev.map((n, i) => i === idx ? { ...n, [field]: value } : n));
+    }
+    function removeNode(idx) {
+        if (nodes.length <= 1) return;
+        setNodes(prev => prev.filter((_, i) => i !== idx));
+    }
+    function addNode() {
+        if (nodes.length >= 10) { addToast('Tối đa 10 nodes', 'error'); return; }
+        setNodes(prev => [...prev, defaultNode()]);
+    }
+
+    async function handleUploadForNode(file, idx) {
+        if (!file || !file.type.startsWith('image/')) { addToast('Chỉ chấp nhận file ảnh', 'error'); return; }
+        const formData = new FormData();
+        formData.append('file', file);
+        try {
+            const res = await fetch('/api/upload', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.success) {
+                updateNode(idx, 'image_url', data.url);
+                addToast(`Ảnh Node ${idx + 1} uploaded`, 'success');
+            }
+        } catch (e) {
+            addToast('Upload lỗi', 'error');
+        }
+    }
+
+    async function runWorkflow() {
+        if (!nodes[0].prompt.trim()) { addToast('Node 1 cần có Prompt', 'error'); return; }
+        setRunning(true);
+        setJobResult(null);
+        try {
+            const res = await fetch('/api/workflow-builder/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: `Workflow Builder (${nodes.length} nodes)`, nodes }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                setJobResult(data.job);
+                addToast(`Job #${data.job.id} đang xử lý (${nodes.length} nodes) 🚀`, 'success');
+            } else {
+                addToast(data.detail || 'Lỗi chạy workflow', 'error');
+            }
+        } catch (e) {
+            addToast('Lỗi kết nối', 'error');
+        } finally {
+            setRunning(false);
+        }
+    }
+
+    async function saveWorkflow() {
+        if (!saveName.trim()) { addToast('Nhập tên workflow', 'error'); return; }
+        setSaving(true);
+        try {
+            const res = await fetch('/api/custom-workflows', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: saveName.trim(), description: saveDesc.trim(), nodes }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                addToast(`Workflow "${saveName}" đã lưu! ✅`, 'success');
+                setShowSave(false);
+                setSaveName('');
+                setSaveDesc('');
+            } else {
+                addToast(data.detail || 'Lỗi lưu', 'error');
+            }
+        } catch (e) {
+            addToast('Lỗi kết nối', 'error');
+        } finally {
+            setSaving(false);
+        }
+    }
+
+    async function deleteWorkflow(wfId) {
+        try {
+            const res = await fetch(`/api/custom-workflows/${wfId}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data.success) {
+                addToast('Đã xóa workflow', 'info');
+                setSavedWfs(prev => prev.filter(w => w.id !== wfId));
+                if (selectedWf && selectedWf.id === wfId) setSelectedWf(null);
+            }
+        } catch (e) {
+            addToast('Lỗi xóa', 'error');
+        }
+    }
+
+    // --- Runner helpers (Luồng 2) ---
+    function selectSavedWf(wf) {
+        setSelectedWf(wf);
+        setRunnerImages(new Array(wf.nodes.length).fill(''));
+        setRunnerTitle('');
+    }
+
+    async function handleRunnerUpload(file, idx) {
+        if (!file || !file.type.startsWith('image/')) { addToast('Chỉ chấp nhận file ảnh', 'error'); return; }
+        const formData = new FormData();
+        formData.append('file', file);
+        try {
+            const res = await fetch('/api/upload', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.success) {
+                setRunnerImages(prev => prev.map((img, i) => i === idx ? data.url : img));
+                addToast(`Ảnh Node ${idx + 1} uploaded`, 'success');
+            }
+        } catch (e) {
+            addToast('Upload lỗi', 'error');
+        }
+    }
+
+    async function runSavedWf() {
+        if (!selectedWf) return;
+        setRunnerRunning(true);
+        try {
+            const res = await fetch(`/api/custom-workflows/${selectedWf.id}/run`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: runnerTitle || selectedWf.name, node_images: runnerImages }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                addToast(`Job #${data.job.id} đang xử lý workflow "${selectedWf.name}" 🚀`, 'success');
+            } else {
+                addToast(data.detail || 'Lỗi chạy workflow', 'error');
+            }
+        } catch (e) {
+            addToast('Lỗi kết nối', 'error');
+        } finally {
+            setRunnerRunning(false);
+        }
+    }
+
+    // --- Render Node Card ---
+    function renderNodeCard(node, idx, editable = true) {
+        const isFirst = idx === 0;
+        const modeOpts = node.model === 'veo-3-fast'
+            ? [['t2v', 'Text-to-Video'], ['i2v', 'Image-to-Video']]
+            : [['i2v', 'Image-to-Video']];
+
+        return (
+            <React.Fragment key={idx}>
+                {idx > 0 && (
+                    <div className="wf-node-connector">
+                        <span className="arrow-down">⬇</span> Output Node {idx} → Input Node {idx + 1}
+                    </div>
+                )}
+                <div className="wf-node">
+                    <div className="wf-node-header">
+                        <div className="wf-node-title">
+                            <span className="wf-node-num">{idx + 1}</span>
+                            Node {idx + 1}
+                        </div>
+                        {editable && !isFirst && <button className="wf-node-remove" onClick={() => removeNode(idx)} title="Xóa node">🗑️</button>}
+                    </div>
+
+                    {!isFirst && (
+                        <div className="wf-auto-input">
+                            📥 Input tự động: Output video từ Node {idx} (thumbnail/frame)
+                        </div>
+                    )}
+
+                    {/* Image Upload */}
+                    <div className="form-group">
+                        <label>🖼️ {isFirst ? 'Ảnh nguồn' : 'Ảnh bổ sung (end frame)'}</label>
+                        {editable ? (
+                            <div className="dropzone" style={{ padding: '1rem', position: 'relative' }}>
+                                <input type="file" accept="image/*" onChange={e => handleUploadForNode(e.target.files[0], idx)} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
+                                {node.image_url
+                                    ? <div className="dropzone-preview"><img src={node.image_url} alt="" /><div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>✅ Đã upload</div></div>
+                                    : <div className="dropzone-text">Click để upload ảnh</div>
+                                }
+                            </div>
+                        ) : (
+                            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Ảnh sẽ được upload khi chạy</div>
+                        )}
+                    </div>
+
+                    {/* Config */}
+                    <div className="form-row">
+                        <div className="form-group">
+                            <label>AI Model</label>
+                            {editable ? (
+                                <select className="form-select" value={node.model} onChange={e => { updateNode(idx, 'model', e.target.value); if (e.target.value === 'veo-3-fast') updateNode(idx, 'mode', 't2v'); else updateNode(idx, 'mode', 'i2v'); }}>
+                                    <option value="kling-3.0">Kling 3.0</option>
+                                    <option value="kling-motion">Kling Motion</option>
+                                    <option value="veo-3-fast">Veo 3 Fast</option>
+                                </select>
+                            ) : <div><code style={{ color: 'var(--accent-primary)' }}>{node.model}</code></div>}
+                        </div>
+                        <div className="form-group">
+                            <label>Chế độ</label>
+                            {editable ? (
+                                <select className="form-select" value={node.mode} onChange={e => updateNode(idx, 'mode', e.target.value)}>
+                                    {modeOpts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                                </select>
+                            ) : <div><code>{node.mode}</code></div>}
+                        </div>
+                    </div>
+                    <div className="form-row">
+                        <div className="form-group">
+                            <label>Chất lượng</label>
+                            {editable ? <select className="form-select" value={node.quality} onChange={e => updateNode(idx, 'quality', e.target.value)}><option value="1080p">1080p</option><option value="720p">720p</option></select> : <div><code>{node.quality}</code></div>}
+                        </div>
+                        <div className="form-group">
+                            <label>Thời lượng (giây)</label>
+                            {editable ? <input type="number" className="form-input" value={node.duration} onChange={e => updateNode(idx, 'duration', parseInt(e.target.value) || 5)} min="3" max="15" /> : <div><code>{node.duration}s</code></div>}
+                        </div>
+                    </div>
+                    <div className="form-group">
+                        <label>Tỷ lệ</label>
+                        {editable ? <select className="form-select" value={node.aspect_ratio} onChange={e => updateNode(idx, 'aspect_ratio', e.target.value)}><option value="9:16">9:16 (TikTok)</option><option value="16:9">16:9 (YouTube)</option><option value="1:1">1:1</option></select> : <div><code>{node.aspect_ratio}</code></div>}
+                    </div>
+                    <div className="form-group">
+                        <label>Prompt tạo Video {isFirst ? '*' : ''}</label>
+                        {editable ? <textarea className="form-textarea" rows="2" placeholder="Mô tả cảnh video..." value={node.prompt} onChange={e => updateNode(idx, 'prompt', e.target.value)}></textarea> : <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', background: 'var(--bg-tertiary)', padding: '0.5rem 0.75rem', borderRadius: '8px' }}>{node.prompt || <span className="text-muted">—</span>}</div>}
+                    </div>
+                    <div className="form-group">
+                        <label>Kịch bản TTS</label>
+                        {editable ? <textarea className="form-textarea" rows="2" placeholder="Kịch bản đọc (tuỳ chọn)..." value={node.script_text} onChange={e => updateNode(idx, 'script_text', e.target.value)}></textarea> : <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{node.script_text || '(không có)'}</div>}
+                    </div>
+                </div>
+            </React.Fragment>
+        );
+    }
+
+    return (
+        <div className="container" style={{ paddingTop: '1.5rem', paddingBottom: '3rem' }}>
+            <div className="page-header">
+                <h1>🔨 Workflow Builder</h1>
+                <p className="subtitle">Tạo workflow multi-node hoặc chạy workflow đã lưu</p>
+            </div>
+
+            <div className="tab-headers" style={{ marginBottom: '1.5rem' }}>
+                <button className={`tab-btn ${activeTab === 'builder' ? 'active' : ''}`} onClick={() => setActiveTab('builder')}>🔨 Tạo Workflow</button>
+                <button className={`tab-btn ${activeTab === 'runner' ? 'active' : ''}`} onClick={() => setActiveTab('runner')}>▶️ Chạy Workflow đã lưu ({savedWfs.length})</button>
+            </div>
+
+            {/* ===== Luồng 1: Builder ===== */}
+            {activeTab === 'builder' && (
+                <div className="card">
+                    <div className="card-header">
+                        <span className="phase-badge">Builder</span>
+                        <h3>Tạo workflow mới</h3>
+                    </div>
+
+                    {nodes.map((node, idx) => renderNodeCard(node, idx, true))}
+
+                    <button className="wf-add-node-btn" onClick={addNode}>➕ Thêm Node</button>
+
+                    <div className="wf-actions">
+                        <button className="btn btn-primary btn-lg" style={{ flex: 1 }} disabled={running} onClick={runWorkflow}>
+                            {running && <span className="spinner"></span>}
+                            ▶️ Chạy Workflow ({nodes.length} nodes)
+                        </button>
+                        <button className="btn btn-success btn-lg" onClick={() => setShowSave(true)}>
+                            💾 Lưu Workflow
+                        </button>
+                    </div>
+
+                    {jobResult && (
+                        <div className="result-box show" style={{ marginTop: '1rem' }}>
+                            <h3 style={{ color: 'var(--accent-secondary)', fontSize: '0.95rem' }}>✅ Job #{jobResult.id} đã được tạo</h3>
+                            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Trạng thái: <span className={`badge badge-${jobResult.status}`}>{jobResult.status}</span> — Kiểm tra trong trang Dashboard.</p>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* ===== Luồng 2: Runner ===== */}
+            {activeTab === 'runner' && (
+                <div>
+                    <div className="card">
+                        <div className="card-header">
+                            <span className="phase-badge phase-badge-merge">Runner</span>
+                            <h3>Chọn Workflow đã lưu</h3>
+                        </div>
+
+                        {savedWfs.length === 0 ? (
+                            <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
+                                Chưa có workflow nào. Tạo workflow ở tab "Tạo Workflow" trước.
+                            </div>
+                        ) : (
+                            <div className="wf-selector-grid">
+                                {savedWfs.map(wf => (
+                                    <div key={wf.id} className={`wf-selector-card ${selectedWf && selectedWf.id === wf.id ? 'selected' : ''}`} onClick={() => selectSavedWf(wf)}>
+                                        <h4>⚡ {wf.name}</h4>
+                                        {wf.description && <div className="wf-desc">{wf.description}</div>}
+                                        <div className="wf-meta">
+                                            <span>📊 {wf.node_count} nodes</span>
+                                            <span>📅 {formatTime(wf.created_at)}</span>
+                                        </div>
+                                        <button className="btn btn-danger btn-sm" style={{ marginTop: '0.5rem' }} onClick={e => { e.stopPropagation(); deleteWorkflow(wf.id); }}>🗑️ Xóa</button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {selectedWf && (
+                        <div className="card">
+                            <div className="card-header">
+                                <span className="phase-badge">Config</span>
+                                <h3>⚡ {selectedWf.name} — Upload ảnh cho các nodes</h3>
+                            </div>
+
+                            <div className="form-group">
+                                <label>Tiêu đề Job</label>
+                                <input type="text" className="form-input" placeholder={selectedWf.name} value={runnerTitle} onChange={e => setRunnerTitle(e.target.value)} />
+                            </div>
+
+                            {selectedWf.nodes.map((node, idx) => (
+                                <div key={idx} className="wf-runner-node">
+                                    <div className="wf-runner-node-header">
+                                        <span className="wf-node-num">{idx + 1}</span>
+                                        <strong>Node {idx + 1}</strong>
+                                    </div>
+                                    <div className="wf-runner-node-config">
+                                        <code>{node.model}</code> · <code>{node.mode}</code> · <code>{node.quality}</code> · <code>{node.duration}s</code> · <code>{node.aspect_ratio}</code>
+                                    </div>
+                                    {node.prompt && <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>Prompt: {(node.prompt || '').substring(0, 100)}{(node.prompt || '').length > 100 ? '...' : ''}</div>}
+
+                                    {idx > 0 && <div className="wf-auto-input" style={{ marginBottom: '0.5rem' }}>📥 Auto: Output từ Node {idx}</div>}
+
+                                    <div className="form-group" style={{ marginBottom: 0 }}>
+                                        <label>🖼️ {idx === 0 ? 'Ảnh nguồn' : 'Ảnh bổ sung'}</label>
+                                        <div className="dropzone" style={{ padding: '0.75rem', position: 'relative' }}>
+                                            <input type="file" accept="image/*" onChange={e => handleRunnerUpload(e.target.files[0], idx)} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
+                                            {runnerImages[idx]
+                                                ? <div className="dropzone-preview"><img src={runnerImages[idx]} alt="" style={{ maxHeight: '80px' }} /><div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>✅</div></div>
+                                                : <div className="dropzone-text" style={{ fontSize: '0.8rem' }}>Click upload ảnh</div>
+                                            }
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+
+                            <button className="btn btn-success btn-lg w-full" style={{ marginTop: '0.75rem' }} disabled={runnerRunning} onClick={runSavedWf}>
+                                {runnerRunning && <span className="spinner"></span>}
+                                🚀 Tạo Video
+                            </button>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Save Modal */}
+            <div className={`save-modal-overlay ${showSave ? 'show' : ''}`} onClick={() => setShowSave(false)}>
+                <div className="save-modal" onClick={e => e.stopPropagation()}>
+                    <h3 style={{ marginBottom: '1rem' }}>💾 Lưu Workflow</h3>
+                    <div className="form-group">
+                        <label>Tên Workflow *</label>
+                        <input type="text" className="form-input" placeholder="VD: Cinematic Product Showcase" value={saveName} onChange={e => setSaveName(e.target.value)} autoFocus />
+                    </div>
+                    <div className="form-group">
+                        <label>Mô tả (tuỳ chọn)</label>
+                        <textarea className="form-textarea" rows="2" placeholder="Mô tả workflow..." value={saveDesc} onChange={e => setSaveDesc(e.target.value)}></textarea>
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>Workflow sẽ lưu cấu hình {nodes.length} node(s). Ảnh sẽ không được lưu — bạn sẽ upload ảnh mới khi chạy lại.</div>
+                    <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                        <button className="btn btn-outline" onClick={() => setShowSave(false)}>Hủy</button>
+                        <button className="btn btn-success" disabled={saving} onClick={saveWorkflow}>
+                            {saving && <span className="spinner"></span>}
+                            💾 Lưu
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+//
 // Jobs Table (Live Dashboard)
 // =============================================
 
@@ -749,6 +1382,7 @@ function JobsTable({ refreshKey }) {
                             <th>ID</th>
                             <th>Tiêu đề</th>
                             <th>Model</th>
+                            <th>Workflow</th>
                             <th>Trạng thái</th>
                             <th>Thời gian</th>
                             <th>Hành động</th>
@@ -757,7 +1391,7 @@ function JobsTable({ refreshKey }) {
                     <tbody>
                         {jobs.length === 0 ? (
                             <tr>
-                                <td colSpan="6" className="text-center text-muted" style={{ padding: '2rem' }}>
+                                <td colSpan="7" className="text-center text-muted" style={{ padding: '2rem' }}>
                                     Chưa có job nào
                                 </td>
                             </tr>
@@ -766,6 +1400,7 @@ function JobsTable({ refreshKey }) {
                                 <td><strong style={{ color: 'var(--text-primary)' }}>#{job.id}</strong></td>
                                 <td className="job-title">{job.title || '—'}</td>
                                 <td><code className="font-mono" style={{ color: 'var(--accent-primary)' }}>{job.model}</code></td>
+                                <td><code className="font-mono" style={{ color: 'var(--accent-secondary)', fontSize: '0.75rem' }}>{job.workflow_id || 'default'}</code></td>
                                 <td><span className={`badge badge-${job.status}`}>{job.status}</span></td>
                                 <td className="job-time">{formatTime(job.created_at)}</td>
                                 <td>
@@ -1314,22 +1949,28 @@ function App() {
     useEffect(() => {
         const path = window.location.pathname;
         if (path === '/admin') setPage('review');
+        else if (path === '/workflow-builder') setPage('workflow-builder');
         else setPage('dashboard');
     }, []);
 
     function navigate(p) {
         setPage(p);
-        const url = p === 'review' ? '/admin' : '/';
-        window.history.pushState({}, '', url);
+        const urlMap = { review: '/admin', 'workflow-builder': '/workflow-builder' };
+        window.history.pushState({}, '', urlMap[p] || '/');
+    }
+
+    function renderPage() {
+        switch (page) {
+            case 'review': return <ReviewPage addToast={addToast} />;
+            case 'workflow-builder': return <WorkflowBuilderPage addToast={addToast} setLoading={setLoading} />;
+            default: return <DashboardPage addToast={addToast} setLoading={setLoading} />;
+        }
     }
 
     return (
         <>
             <Navbar currentPage={page} onNavigate={navigate} />
-            {page === 'dashboard'
-                ? <DashboardPage addToast={addToast} setLoading={setLoading} />
-                : <ReviewPage addToast={addToast} />
-            }
+            {renderPage()}
             <ToastContainer toasts={toasts} removeToast={removeToast} />
             <LoadingOverlay show={loading.show} text={loading.text} />
         </>

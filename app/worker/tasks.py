@@ -27,6 +27,7 @@ from app.services.video_provider import get_provider, ProviderError
 from app.services.editor import generate_tts, concat_videos_with_audio, _ensure_temp_dir, cleanup_temp
 from app.services.storage import download_file_from_url, upload_file_from_path
 from app.services.tiktok_audio import extract_audio, validate_tiktok_url
+from app.workflows.engine import WorkflowEngine
 
 logger = logging.getLogger(__name__)
 
@@ -81,28 +82,23 @@ def process_video_pipeline(self, job_id: int):
         temp_dir = _ensure_temp_dir(job_id)
 
         # ===========================================
-        # Phase 3: Generate Video via Plenxai API
+        # Phase 2-3: Run Workflow Engine
         # ===========================================
-        _add_log(db, job_id, "generation", f"Calling Plenxai: model={job.model}, mode={job.mode}")
+        workflow_id = job.workflow_id or "default"
+        _add_log(db, job_id, "workflow", f"Starting workflow: {workflow_id}")
 
-        provider = get_provider(
-            model=job.model,
-            mode=job.mode,
-            quality=job.quality,
-            duration=job.duration,
-            aspect_ratio=job.aspect_ratio,
+        engine = WorkflowEngine()
+        ctx = engine.run(
+            workflow_id=workflow_id,
+            job=job,
+            db=db,
+            log_callback=lambda job_id, phase, msg: _add_log(db, job_id, phase, msg),
         )
 
-        # Build kwargs based on job config
-        gen_kwargs = {}
-        if job.image_url and job.mode == "i2v":
-            gen_kwargs["start_image_url"] = job.image_url
-
-        result = provider.generate_video(prompt=job.prompt, **gen_kwargs)
-
-        job.plenxai_task_id = result.get("task_id")
-        job.raw_video_url = result.get("result_url")
-        job.thumbnail_url = result.get("thumbnail_url")
+        # Extract results from workflow context
+        job.plenxai_task_id = ctx.get("result_task_id")
+        job.raw_video_url = ctx.get("result_video_url")
+        job.thumbnail_url = ctx.get("result_thumbnail_url")
         job.status = JobStatus.RENDERED
         db.commit()
         _add_log(db, job_id, "generation", f"Video rendered: {job.raw_video_url}")
@@ -314,3 +310,184 @@ def process_merge_pipeline(self, merge_job_id: int):
         db.close()
         if temp_dir:
             cleanup_temp(temp_dir=temp_dir)
+
+
+# =============================================
+# Multi-Node Workflow Pipeline
+# =============================================
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
+def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
+    """
+    Process a multi-node workflow sequentially.
+
+    Each node generates a video. Output (thumbnail) from node N
+    becomes the start_image for node N+1. Each node also has its own
+    user-uploaded image.
+
+    After all nodes complete, videos are concatenated into one final video.
+
+    Args:
+        job_id: VideoJob ID in DB
+        nodes: List of node configs, each containing:
+            - model, mode, quality, duration, aspect_ratio, prompt, script_text
+            - image_url: user-uploaded image for this node
+    """
+    db = SessionLocal()
+    temp_dir = None
+
+    try:
+        job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
+        if not job:
+            logger.error(f"[WorkflowNodes] Job {job_id} not found!")
+            return {"status": "error", "message": f"Job {job_id} not found"}
+
+        job.status = JobStatus.PROCESSING
+        job.celery_task_id = self.request.id
+        db.commit()
+        _add_log(db, job_id, "pipeline", f"Multi-node workflow started ({len(nodes)} nodes)")
+
+        temp_dir = _ensure_temp_dir(job_id)
+        video_paths = []
+        prev_thumbnail_url = None
+
+        for i, node in enumerate(nodes):
+            node_num = i + 1
+            _add_log(db, job_id, "workflow", f"Node {node_num}/{len(nodes)}: Starting")
+
+            # Update current step
+            job.current_step = f"node_{node_num}"
+            db.commit()
+
+            # Resolve image inputs
+            model = node.get("model", "kling-3.0")
+            mode = node.get("mode", "i2v")
+            quality = node.get("quality", "1080p")
+            duration = node.get("duration", 5)
+            aspect_ratio = node.get("aspect_ratio", "9:16")
+            prompt = node.get("prompt", "")
+            user_image_url = node.get("image_url")
+
+            # Build provider kwargs
+            gen_kwargs = {}
+
+            if mode == "i2v":
+                if i == 0:
+                    # Node 1: use user's uploaded image as start
+                    if user_image_url:
+                        gen_kwargs["start_image_url"] = user_image_url
+                else:
+                    # Node 2+: use previous output as start, user image as end
+                    if prev_thumbnail_url:
+                        gen_kwargs["start_image_url"] = prev_thumbnail_url
+                    if user_image_url:
+                        gen_kwargs["end_image_url"] = user_image_url
+
+            _add_log(
+                db, job_id, "generation",
+                f"Node {node_num}: model={model}, mode={mode}, "
+                f"start_img={'yes' if gen_kwargs.get('start_image_url') else 'no'}, "
+                f"end_img={'yes' if gen_kwargs.get('end_image_url') else 'no'}"
+            )
+
+            # Create provider and generate
+            provider = get_provider(
+                model=model,
+                mode=mode,
+                quality=quality,
+                duration=duration,
+                aspect_ratio=aspect_ratio,
+            )
+
+            result = provider.generate_video(prompt=prompt, **gen_kwargs)
+            result_url = result.get("result_url")
+            result_thumbnail = result.get("thumbnail_url")
+
+            _add_log(db, job_id, "generation", f"Node {node_num}: Video generated → {result_url}")
+
+            # Download this node's video
+            node_video_path = os.path.join(temp_dir, f"node_{node_num}.mp4")
+            download_file_from_url(result_url, node_video_path)
+            video_paths.append(node_video_path)
+
+            # Save thumbnail for next node's input
+            prev_thumbnail_url = result_thumbnail or result_url
+
+            # Store first node's result as raw_video_url
+            if i == 0:
+                job.plenxai_task_id = result.get("task_id")
+                job.raw_video_url = result_url
+                job.thumbnail_url = result_thumbnail
+                db.commit()
+
+        _add_log(db, job_id, "workflow", f"All {len(nodes)} nodes completed")
+        job.status = JobStatus.RENDERED
+        db.commit()
+
+        # ===========================================
+        # Post-production: TTS + Concat all segments
+        # ===========================================
+
+        # Generate TTS from the last node's script (or job's script)
+        audio_path = None
+        last_script = None
+        # Check nodes in reverse for a script
+        for node in reversed(nodes):
+            if node.get("script_text", "").strip():
+                last_script = node["script_text"].strip()
+                break
+        # Fallback to job-level script
+        if not last_script and job.script_text and job.script_text.strip():
+            last_script = job.script_text.strip()
+
+        if last_script:
+            audio_path = os.path.join(temp_dir, "tts_audio.mp3")
+            generate_tts(last_script, audio_path)
+            _add_log(db, job_id, "tts", "TTS audio generated")
+
+            audio_url = upload_file_from_path(audio_path, f"audio_job_{job_id}.mp3", "audio/mpeg")
+            job.audio_url = audio_url
+            db.commit()
+        else:
+            _add_log(db, job_id, "tts", "No script text, skipping TTS")
+
+        # Concat all node videos + optional audio
+        final_path = os.path.join(temp_dir, "final_video.mp4")
+        concat_videos_with_audio(
+            video_paths=video_paths,
+            audio_path=audio_path,
+            output_path=final_path,
+        )
+        _add_log(db, job_id, "ffmpeg", f"Post-production: concatenated {len(video_paths)} segments")
+
+        # Upload final video
+        final_url = upload_file_from_path(final_path, f"final_job_{job_id}.mp4", "video/mp4")
+        job.final_video_url = final_url
+        job.status = JobStatus.PENDING_REVIEW
+        db.commit()
+
+        _add_log(db, job_id, "upload", f"Final video uploaded: {final_url}")
+        _add_log(db, job_id, "pipeline", "Multi-node workflow completed — awaiting review")
+
+        return {
+            "status": "success",
+            "job_id": job_id,
+            "final_video_url": final_url,
+            "node_count": len(nodes),
+        }
+
+    except ProviderError as e:
+        logger.error(f"[WorkflowNodes] Provider error for job {job_id}: {e}")
+        _mark_failed(db, job_id, "generation", str(e))
+        raise self.retry(exc=e)
+
+    except Exception as e:
+        logger.error(f"[WorkflowNodes] Pipeline error for job {job_id}: {e}", exc_info=True)
+        _mark_failed(db, job_id, "pipeline", str(e))
+        return {"status": "error", "job_id": job_id, "message": str(e)}
+
+    finally:
+        db.close()
+        if temp_dir:
+            cleanup_temp(temp_dir=temp_dir)
+

@@ -1,0 +1,56 @@
+{
+  "workflow_id": "image_person_bg",
+  "name": "Ảnh + Nhân vật + Background → Video",
+  "description": "Biến tấu ảnh crawl, ghép nhân vật người và background, rồi tạo video AI từ ảnh đã compose",
+  "required_inputs": ["prompt", "image_url", "person_image_url", "background_image_url"],
+  "optional_inputs": [],
+  "steps": [
+    {
+      "step": "image_transform",
+      "params": {
+        "style": "cinematic",
+        "model": "nano-banana-pro",
+        "prompt_template": "Transform this product image into a {style} high-quality visual, enhance lighting and details, maintain the main subject, professional commercial style",
+        "aspect_ratio": "9:16"
+      }
+    },
+    {
+      "step": "bg_remove",
+      "condition": {"has": "person_image_url"},
+      "params": {
+        "input_key": "person_image_url",
+        "output_key": "person_nobg_url"
+      }
+    },
+    {
+      "step": "person_overlay",
+      "condition": {"has": "person_image_url"},
+      "params": {
+        "bg_key": "transformed_image_url",
+        "person_key": "person_nobg_url",
+        "placement": "left",
+        "scale": 0.7,
+        "output_key": "person_overlay_url"
+      }
+    },
+    {
+      "step": "scene_compose",
+      "params": {
+        "mode": "composite",
+        "foreground_key": "person_overlay_url",
+        "background_key": "background_image_url",
+        "bg_blur": 2,
+        "output_key": "composed_scene_url"
+      }
+    },
+    {
+      "step": "video_gen",
+      "params": {
+        "image_key": "composed_scene_url",
+        "prompt_template": "Cinematic product showcase video featuring {person_description} presenting {product_name}, smooth camera movement, professional lighting, {style} style",
+        "style": "cinematic",
+        "person_description": "a professional presenter"
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, ForeignKey, JSON, Boolean
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -25,8 +25,15 @@ class VideoJob(Base):
 
     # Input data
     image_url = Column(Text, nullable=True)
+    person_image_url = Column(Text, nullable=True)
+    background_image_url = Column(Text, nullable=True)
     prompt = Column(Text, nullable=False)
     script_text = Column(Text, nullable=True)
+
+    # Workflow tracking
+    workflow_id = Column(String(100), default="default", nullable=False)
+    workflow_context = Column(JSON, nullable=True)
+    current_step = Column(String(100), nullable=True)
 
     # Provider config
     provider = Column(String(50), default="plenxai")
@@ -64,8 +71,13 @@ class VideoJob(Base):
             "title": self.title,
             "status": self.status.value if self.status else None,
             "image_url": self.image_url,
+            "person_image_url": self.person_image_url,
+            "background_image_url": self.background_image_url,
             "prompt": self.prompt,
             "script_text": self.script_text,
+            "workflow_id": self.workflow_id,
+            "workflow_context": self.workflow_context,
+            "current_step": self.current_step,
             "provider": self.provider,
             "model": self.model,
             "mode": self.mode,
@@ -148,6 +160,92 @@ class MergeJob(Base):
             "merged_video_url": self.merged_video_url,
             "error_message": self.error_message,
             "celery_task_id": self.celery_task_id,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+# =============================================
+# Custom Workflow (User-created)
+# =============================================
+
+class CustomWorkflow(Base):
+    __tablename__ = "custom_workflows"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Node configurations as JSON array
+    # Each node: {
+    #   "node_index": 0,
+    #   "model": "kling-3.0",
+    #   "mode": "i2v",
+    #   "quality": "1080p",
+    #   "duration": 5,
+    #   "aspect_ratio": "9:16",
+    #   "prompt": "...",
+    #   "script_text": "..."
+    # }
+    nodes = Column(JSON, nullable=False)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "nodes": self.nodes,
+            "node_count": len(self.nodes) if self.nodes else 0,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+# =============================================
+# Drive Image Tracking
+# =============================================
+
+class DriveImageStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class DriveImage(Base):
+    __tablename__ = "drive_images"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    drive_file_id = Column(String(200), unique=True, nullable=False, index=True)
+    drive_folder_id = Column(String(200), nullable=False, index=True)
+    file_name = Column(String(500), nullable=False)
+    mime_type = Column(String(100), nullable=True)
+    file_size = Column(Integer, nullable=True)            # bytes
+    thumbnail_url = Column(Text, nullable=True)           # Drive thumbnail link
+    image_url = Column(Text, nullable=True)               # URL after upload to R2/local
+    status = Column(Enum(DriveImageStatus), default=DriveImageStatus.PENDING, index=True)
+    job_id = Column(Integer, ForeignKey("video_jobs.id"), nullable=True)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "drive_file_id": self.drive_file_id,
+            "drive_folder_id": self.drive_folder_id,
+            "file_name": self.file_name,
+            "mime_type": self.mime_type,
+            "file_size": self.file_size,
+            "thumbnail_url": self.thumbnail_url,
+            "image_url": self.image_url,
+            "status": self.status.value if self.status else None,
+            "job_id": self.job_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   web:
     build: .
@@ -28,7 +26,14 @@ services:
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - redis
-    command: celery -A app.worker.tasks worker --loglevel=info
+    # watchmedo auto-restarts celery worker when any .py file changes
+    command: >
+      watchmedo auto-restart
+      --directory=/app
+      --pattern=*.py
+      --recursive
+      --
+      celery -A app.worker.tasks worker --loglevel=info
     restart: unless-stopped
 
   redis:

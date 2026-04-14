@@ -35,12 +35,23 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.database import get_db, init_db
-from app.core.models import VideoJob, JobLog, JobStatus, MergeJob, MergeStatus
+from app.core.models import (
+    VideoJob, JobLog, JobStatus, MergeJob, MergeStatus,
+    CustomWorkflow, DriveImage, DriveImageStatus,
+)
 from app.services.scraper import scrape_article, generate_script_with_llm
 from app.services.storage import upload_file_to_r2
 from app.services.google_sheet import read_sheet_links, update_link_status, parse_sheet_url
+from app.services.google_drive import (
+    parse_drive_folder_url, list_images_in_folder,
+    get_folder_name, download_file, get_file_direct_url,
+)
 from app.services.tiktok_audio import validate_tiktok_url
-from app.worker.tasks import process_video_pipeline, process_merge_pipeline
+from app.worker.tasks import (
+    process_video_pipeline, process_merge_pipeline,
+    process_workflow_nodes_pipeline,
+)
+from app.workflows.engine import WorkflowEngine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -79,8 +90,11 @@ class ScrapeRequest(BaseModel):
 class SubmitJobRequest(BaseModel):
     title: Optional[str] = None
     image_url: Optional[str] = None
+    person_image_url: Optional[str] = None
+    background_image_url: Optional[str] = None
     prompt: str
     script_text: Optional[str] = None
+    workflow_id: str = "default"
     model: str = "kling-3.0"
     mode: str = "i2v"
     quality: str = "1080p"
@@ -92,6 +106,32 @@ class RejectRequest(BaseModel):
 
 class SheetScrapeRequest(BaseModel):
     sheet_url: str
+
+class DrivePreviewRequest(BaseModel):
+    folder_url: str
+
+class WorkflowNodeConfig(BaseModel):
+    model: str = "kling-3.0"
+    mode: str = "i2v"
+    quality: str = "1080p"
+    duration: int = 5
+    aspect_ratio: str = "9:16"
+    prompt: str = ""
+    script_text: Optional[str] = None
+    image_url: Optional[str] = None
+
+class WorkflowBuilderRunRequest(BaseModel):
+    title: Optional[str] = None
+    nodes: list[WorkflowNodeConfig]
+
+class SaveWorkflowRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    nodes: list[WorkflowNodeConfig]
+
+class RunSavedWorkflowRequest(BaseModel):
+    title: Optional[str] = None
+    node_images: list[Optional[str]]  # image_url for each node, in order
 
 
 # =============================================
@@ -327,8 +367,11 @@ async def api_submit(req: SubmitJobRequest, db: Session = Depends(get_db)):
     job = VideoJob(
         title=req.title or f"Video Job",
         image_url=req.image_url,
+        person_image_url=req.person_image_url,
+        background_image_url=req.background_image_url,
         prompt=req.prompt,
         script_text=req.script_text,
+        workflow_id=req.workflow_id,
         model=req.model,
         mode=req.mode,
         quality=req.quality,
@@ -351,6 +394,21 @@ async def api_submit(req: SubmitJobRequest, db: Session = Depends(get_db)):
         "success": True,
         "job": job.to_dict(),
         "celery_task_id": task.id,
+    }
+
+
+# =============================================
+# Workflow Management
+# =============================================
+
+@app.get("/api/workflows")
+def api_list_workflows():
+    """List all available workflow configs."""
+    engine = WorkflowEngine()
+    workflows = engine.list_workflows()
+    return {
+        "success": True,
+        "workflows": workflows,
     }
 
 
@@ -515,3 +573,336 @@ def list_merges(limit: int = 20, db: Session = Depends(get_db)):
     """List recent merge jobs."""
     merges = db.query(MergeJob).order_by(MergeJob.id.desc()).limit(limit).all()
     return {"success": True, "merges": [m.to_dict() for m in merges]}
+
+
+# =============================================
+# Google Drive Integration
+# =============================================
+
+@app.post("/api/drive/preview")
+async def api_drive_preview(req: DrivePreviewRequest, db: Session = Depends(get_db)):
+    """Preview images in a Google Drive folder with their processing status."""
+    try:
+        parsed = parse_drive_folder_url(req.folder_url)
+        folder_id = parsed["folder_id"]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        folder_name = get_folder_name(folder_id)
+        files = list_images_in_folder(folder_id)
+    except Exception as e:
+        logger.error(f"[API] Drive preview error: {e}")
+        raise HTTPException(status_code=500, detail=f"Cannot read Drive folder: {str(e)}")
+
+    # Check each file's status in DB
+    images = []
+    for f in files:
+        file_id = f["id"]
+        existing = db.query(DriveImage).filter(DriveImage.drive_file_id == file_id).first()
+
+        images.append({
+            "drive_file_id": file_id,
+            "file_name": f["name"],
+            "mime_type": f.get("mimeType"),
+            "file_size": int(f.get("size", 0)),
+            "thumbnail_url": f.get("thumbnailLink"),
+            "status": existing.status.value if existing else "pending",
+            "job_id": existing.job_id if existing else None,
+            "image_url": existing.image_url if existing else None,
+        })
+
+    pending_count = sum(1 for img in images if img["status"] == "pending")
+    done_count = sum(1 for img in images if img["status"] == "done")
+
+    return {
+        "success": True,
+        "folder_id": folder_id,
+        "folder_name": folder_name,
+        "total_images": len(images),
+        "pending": pending_count,
+        "done": done_count,
+        "images": images,
+    }
+
+
+@app.post("/api/drive/import")
+async def api_drive_import(
+    folder_url: str = Form(...),
+    file_ids: str = Form(...),  # comma-separated drive file IDs
+    db: Session = Depends(get_db),
+):
+    """Download selected images from Drive and upload to local/R2 storage."""
+    try:
+        parsed = parse_drive_folder_url(folder_url)
+        folder_id = parsed["folder_id"]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    selected_ids = [fid.strip() for fid in file_ids.split(",") if fid.strip()]
+    if not selected_ids:
+        raise HTTPException(status_code=400, detail="No file IDs provided")
+
+    results = []
+    for file_id in selected_ids:
+        try:
+            # Check if already imported
+            existing = db.query(DriveImage).filter(DriveImage.drive_file_id == file_id).first()
+            if existing and existing.image_url:
+                results.append({
+                    "drive_file_id": file_id,
+                    "success": True,
+                    "image_url": existing.image_url,
+                    "already_imported": True,
+                })
+                continue
+
+            # Download from Drive
+            import tempfile
+            temp_path = os.path.join(settings.TEMP_DIR, f"drive_{file_id}")
+            os.makedirs(settings.TEMP_DIR, exist_ok=True)
+            download_file(file_id, temp_path)
+
+            # Read and upload to storage
+            with open(temp_path, "rb") as f:
+                file_bytes = f.read()
+
+            # Detect content type
+            import mimetypes
+            file_name = f"drive_{file_id}.jpg"
+            try:
+                # Get actual filename from Drive
+                from app.services.google_drive import _get_drive_service
+                service = _get_drive_service()
+                file_meta = service.files().get(fileId=file_id, fields="name, mimeType").execute()
+                file_name = file_meta.get("name", file_name)
+                content_type = file_meta.get("mimeType", "image/jpeg")
+            except Exception:
+                content_type = "image/jpeg"
+
+            image_url = upload_file_to_r2(file_bytes, file_name, content_type)
+
+            # Upsert DriveImage record
+            if existing:
+                existing.image_url = image_url
+                existing.status = DriveImageStatus.PENDING
+            else:
+                drive_img = DriveImage(
+                    drive_file_id=file_id,
+                    drive_folder_id=folder_id,
+                    file_name=file_name,
+                    mime_type=content_type,
+                    file_size=len(file_bytes),
+                    image_url=image_url,
+                    status=DriveImageStatus.PENDING,
+                )
+                db.add(drive_img)
+            db.commit()
+
+            # Cleanup temp
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+            results.append({
+                "drive_file_id": file_id,
+                "success": True,
+                "image_url": image_url,
+                "file_name": file_name,
+            })
+
+        except Exception as e:
+            logger.error(f"[API] Drive import error for {file_id}: {e}")
+            results.append({
+                "drive_file_id": file_id,
+                "success": False,
+                "error": str(e),
+            })
+
+    return {
+        "success": True,
+        "total": len(results),
+        "imported": sum(1 for r in results if r.get("success")),
+        "results": results,
+    }
+
+
+# =============================================
+# Custom Workflows (CRUD)
+# =============================================
+
+@app.get("/api/custom-workflows")
+def api_list_custom_workflows(db: Session = Depends(get_db)):
+    """List all saved custom workflows."""
+    workflows = db.query(CustomWorkflow).order_by(CustomWorkflow.updated_at.desc()).all()
+    return {"success": True, "workflows": [w.to_dict() for w in workflows]}
+
+
+@app.post("/api/custom-workflows")
+def api_save_custom_workflow(req: SaveWorkflowRequest, db: Session = Depends(get_db)):
+    """Save a new custom workflow."""
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="Workflow name is required")
+    if not req.nodes or len(req.nodes) == 0:
+        raise HTTPException(status_code=400, detail="At least 1 node is required")
+    if len(req.nodes) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 nodes per workflow")
+
+    nodes_data = [node.model_dump() for node in req.nodes]
+    # Remove image_url from saved config — images are provided at runtime
+    for node in nodes_data:
+        node.pop("image_url", None)
+
+    workflow = CustomWorkflow(
+        name=req.name.strip(),
+        description=req.description or "",
+        nodes=nodes_data,
+    )
+    db.add(workflow)
+    db.commit()
+    db.refresh(workflow)
+
+    logger.info(f"[API] Custom workflow saved: #{workflow.id} '{workflow.name}' ({len(nodes_data)} nodes)")
+    return {"success": True, "workflow": workflow.to_dict()}
+
+
+@app.get("/api/custom-workflows/{wf_id}")
+def api_get_custom_workflow(wf_id: int, db: Session = Depends(get_db)):
+    """Get a single custom workflow."""
+    wf = db.query(CustomWorkflow).filter(CustomWorkflow.id == wf_id).first()
+    if not wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return {"success": True, "workflow": wf.to_dict()}
+
+
+@app.delete("/api/custom-workflows/{wf_id}")
+def api_delete_custom_workflow(wf_id: int, db: Session = Depends(get_db)):
+    """Delete a custom workflow."""
+    wf = db.query(CustomWorkflow).filter(CustomWorkflow.id == wf_id).first()
+    if not wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    db.delete(wf)
+    db.commit()
+    logger.info(f"[API] Custom workflow deleted: #{wf_id}")
+    return {"success": True}
+
+
+# =============================================
+# Workflow Builder — Run Ad-hoc (Luồng 1)
+# =============================================
+
+@app.post("/api/workflow-builder/run")
+def api_run_workflow_builder(req: WorkflowBuilderRunRequest, db: Session = Depends(get_db)):
+    """Run a multi-node workflow ad-hoc from the Workflow Builder UI."""
+    if not req.nodes or len(req.nodes) == 0:
+        raise HTTPException(status_code=400, detail="At least 1 node is required")
+    if len(req.nodes) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 nodes per workflow")
+
+    # Validate at least first node has a prompt
+    if not req.nodes[0].prompt.strip():
+        raise HTTPException(status_code=400, detail="Node 1 requires a prompt")
+
+    # Create a VideoJob as the tracker
+    first_node = req.nodes[0]
+    job = VideoJob(
+        title=req.title or f"Workflow ({len(req.nodes)} nodes)",
+        image_url=first_node.image_url,
+        prompt=first_node.prompt,
+        script_text=first_node.script_text,
+        workflow_id=f"builder_{len(req.nodes)}_nodes",
+        model=first_node.model,
+        mode=first_node.mode,
+        quality=first_node.quality,
+        duration=first_node.duration,
+        aspect_ratio=first_node.aspect_ratio,
+        status=JobStatus.QUEUED,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    # Serialize nodes for Celery
+    nodes_data = [node.model_dump() for node in req.nodes]
+
+    # Dispatch to Celery
+    task = process_workflow_nodes_pipeline.delay(job.id, nodes_data)
+    job.celery_task_id = task.id
+    db.commit()
+
+    logger.info(f"[API] Workflow Builder job #{job.id} submitted ({len(req.nodes)} nodes)")
+    return {
+        "success": True,
+        "job": job.to_dict(),
+        "celery_task_id": task.id,
+    }
+
+
+# =============================================
+# Run Saved Workflow (Luồng 2)
+# =============================================
+
+@app.post("/api/custom-workflows/{wf_id}/run")
+def api_run_saved_workflow(
+    wf_id: int,
+    req: RunSavedWorkflowRequest,
+    db: Session = Depends(get_db),
+):
+    """Run a saved custom workflow with user-provided images."""
+    wf = db.query(CustomWorkflow).filter(CustomWorkflow.id == wf_id).first()
+    if not wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    saved_nodes = wf.nodes
+    if not saved_nodes:
+        raise HTTPException(status_code=400, detail="Workflow has no nodes")
+
+    # Merge saved config with runtime images
+    runtime_nodes = []
+    for i, saved_node in enumerate(saved_nodes):
+        node_data = dict(saved_node)  # copy saved config
+        # Apply runtime image if provided
+        if i < len(req.node_images) and req.node_images[i]:
+            node_data["image_url"] = req.node_images[i]
+        runtime_nodes.append(node_data)
+
+    # Create a VideoJob
+    first_node = runtime_nodes[0]
+    job = VideoJob(
+        title=req.title or f"{wf.name}",
+        image_url=first_node.get("image_url"),
+        prompt=first_node.get("prompt", ""),
+        script_text=first_node.get("script_text"),
+        workflow_id=f"custom_{wf.id}",
+        model=first_node.get("model", "kling-3.0"),
+        mode=first_node.get("mode", "i2v"),
+        quality=first_node.get("quality", "1080p"),
+        duration=first_node.get("duration", 5),
+        aspect_ratio=first_node.get("aspect_ratio", "9:16"),
+        status=JobStatus.QUEUED,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    # Dispatch
+    task = process_workflow_nodes_pipeline.delay(job.id, runtime_nodes)
+    job.celery_task_id = task.id
+    db.commit()
+
+    logger.info(f"[API] Saved workflow #{wf_id} '{wf.name}' → job #{job.id}")
+    return {
+        "success": True,
+        "job": job.to_dict(),
+        "workflow": wf.to_dict(),
+        "celery_task_id": task.id,
+    }
+
+
+# =============================================
+# SPA Catch-all (must be last)
+# =============================================
+
+@app.get("/workflow-builder")
+async def workflow_builder_page():
+    return FileResponse(REACT_INDEX, media_type="text/html")
+
