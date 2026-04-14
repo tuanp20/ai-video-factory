@@ -107,6 +107,8 @@ class PlenxaiAdapter(VideoProvider):
 
         if kwargs.get("references_urls"):
             payload["references_urls"] = kwargs["references_urls"]
+        if kwargs.get("references_base64"):
+            payload["references_base64"] = kwargs["references_base64"]
         if kwargs.get("negative_prompt"):
             payload["negative_prompt"] = kwargs["negative_prompt"]
 
