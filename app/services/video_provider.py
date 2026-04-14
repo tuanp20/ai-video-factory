@@ -11,6 +11,7 @@ API Reference:
   Auth: X-API-Key header
 """
 
+import os
 import time
 import logging
 from abc import ABC, abstractmethod
@@ -107,13 +108,51 @@ class PlenxaiAdapter(VideoProvider):
 
         if kwargs.get("references_urls"):
             payload["references_urls"] = kwargs["references_urls"]
-        if kwargs.get("references_base64"):
-            payload["references_base64"] = kwargs["references_base64"]
         if kwargs.get("negative_prompt"):
             payload["negative_prompt"] = kwargs["negative_prompt"]
 
         task_id = self._submit(f"{self.base_url}/api/v1/developer/generate/image", payload)
         return self._poll_result(task_id)
+
+    def upload_image(self, file_path: str) -> str:
+        """
+        Upload a local image file to Plenxai storage.
+        Returns a public URL that Plenxai can access for reference images.
+
+        Uses JWT Bearer auth (separate from API key auth used for generation).
+        """
+        jwt_token = settings.PLENXAI_JWT_TOKEN
+        if not jwt_token:
+            raise ProviderError("PLENXAI_JWT_TOKEN not configured — cannot upload reference images")
+
+        import mimetypes
+        mime = mimetypes.guess_type(file_path)[0] or "image/jpeg"
+        filename = os.path.basename(file_path)
+
+        try:
+            with open(file_path, "rb") as f:
+                files = {"file": (filename, f, mime)}
+                headers = {"Authorization": f"Bearer {jwt_token}"}
+                with httpx.Client(timeout=60) as client:
+                    response = client.post(
+                        f"{self.base_url}/api/v1/upload/image",
+                        files=files,
+                        headers=headers,
+                    )
+
+            data = response.json()
+            if response.status_code != 200 or not data.get("success"):
+                error_msg = data.get("message") or data.get("error") or f"HTTP {response.status_code}"
+                logger.error(f"[Plenxai] Upload failed: {error_msg}")
+                raise ProviderError(f"Plenxai upload error: {error_msg}")
+
+            url = data.get("url")
+            logger.info(f"[Plenxai] Image uploaded: {filename} → {url}")
+            return url
+
+        except httpx.HTTPError as e:
+            logger.error(f"[Plenxai] Upload HTTP error: {e}")
+            raise ProviderError(f"Plenxai upload error: {e}") from e
 
     def _submit(self, url: str, payload: dict) -> str:
         """POST to generate endpoint, return task_id."""

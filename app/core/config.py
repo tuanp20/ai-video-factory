@@ -18,6 +18,7 @@ class Settings:
 
     # API Keys
     PLENXAI_API_KEY = os.getenv("PLENXAI_API_KEY", "")
+    PLENXAI_JWT_TOKEN = os.getenv("PLENXAI_JWT_TOKEN", "")
     PLENXAI_BASE_URL = os.getenv("PLENXAI_BASE_URL", "https://plenxai.com")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 

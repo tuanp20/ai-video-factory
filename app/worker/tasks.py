@@ -376,31 +376,41 @@ def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
             # Build provider kwargs
             gen_kwargs = {}
 
+            # Create provider early (needed for upload_image)
+            provider = get_provider(
+                model=model,
+                mode=mode,
+                quality=quality,
+                duration=duration,
+                aspect_ratio=aspect_ratio,
+            )
+
+            # Helper: resolve image URL — upload local files to Plenxai if needed
+            def _resolve_image_url(url):
+                if not url:
+                    return url
+                if url.startswith('/'):
+                    # Local path — upload to Plenxai to get public URL
+                    local_path = os.path.join('/app', url.lstrip('/'))
+                    if os.path.exists(local_path):
+                        public_url = provider.upload_image(local_path)
+                        logger.info(f"[Job {job_id}] Uploaded local image to Plenxai: {url} → {public_url}")
+                        return public_url
+                    else:
+                        logger.warning(f"[Job {job_id}] Local image not found: {local_path}")
+                        return url
+                return url  # Already a public URL
+
             if category == "video":
                 if mode == "i2v":
                     if i == 0:
-                        # Node 1: use user's uploaded image as start
                         if user_image_url:
-                            gen_kwargs["start_image_url"] = user_image_url
+                            gen_kwargs["start_image_url"] = _resolve_image_url(user_image_url)
                     else:
-                        # Node 2+: use previous output as start, user image as end
                         if prev_thumbnail_url:
-                            gen_kwargs["start_image_url"] = prev_thumbnail_url
+                            gen_kwargs["start_image_url"] = _resolve_image_url(prev_thumbnail_url)
                         if user_image_url:
-                            gen_kwargs["end_image_url"] = user_image_url
-
-                # Convert local paths to base64 for Plenxai accessibility
-                for img_key in ("start_image_url", "end_image_url"):
-                    img_val = gen_kwargs.get(img_key)
-                    if img_val and img_val.startswith('/'):
-                        local_path = os.path.join('/app', img_val.lstrip('/'))
-                        if os.path.exists(local_path):
-                            with open(local_path, 'rb') as img_f:
-                                img_bytes = img_f.read()
-                            mime = mimetypes.guess_type(local_path)[0] or 'image/jpeg'
-                            b64_str = base64.b64encode(img_bytes).decode()
-                            gen_kwargs[img_key] = f'data:{mime};base64,{b64_str}'
-                            logger.info(f"[Job {job_id}] Converted {img_key} to base64 ({len(img_bytes)} bytes)")
+                            gen_kwargs["end_image_url"] = _resolve_image_url(user_image_url)
 
                 _add_log(
                     db, job_id, "generation",
@@ -412,35 +422,11 @@ def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
                 # category == "image"
                 refs = []
                 if user_image_url:
-                    refs.append(user_image_url)
+                    refs.append(_resolve_image_url(user_image_url))
                 if i > 0 and prev_thumbnail_url:
-                    refs.append(prev_thumbnail_url)
+                    refs.append(_resolve_image_url(prev_thumbnail_url))
                 if refs:
-                    # Check if any ref is a local path (not internet-accessible)
-                    has_local = any(r.startswith('/') for r in refs)
-                    if has_local:
-                        # Convert local refs to base64 data URIs
-                        refs_b64 = []
-                        for ref_url in refs:
-                            if ref_url.startswith('/'):
-                                # Local path — read file and convert to base64
-                                local_path = os.path.join('/app', ref_url.lstrip('/'))
-                                if os.path.exists(local_path):
-                                    with open(local_path, 'rb') as img_f:
-                                        img_bytes = img_f.read()
-                                    mime = mimetypes.guess_type(local_path)[0] or 'image/jpeg'
-                                    b64_str = base64.b64encode(img_bytes).decode()
-                                    refs_b64.append(f'data:{mime};base64,{b64_str}')
-                                    logger.info(f"[Job {job_id}] Converted local ref to base64: {ref_url} ({len(img_bytes)} bytes)")
-                                else:
-                                    logger.warning(f"[Job {job_id}] Local ref file not found: {local_path}")
-                            else:
-                                # Already a full URL (e.g. from R2)
-                                refs_b64.append(ref_url)
-                        if refs_b64:
-                            gen_kwargs["references_base64"] = refs_b64
-                    else:
-                        gen_kwargs["references_urls"] = refs
+                    gen_kwargs["references_urls"] = refs
                 
                 if resolution:
                     gen_kwargs["resolution"] = resolution
@@ -449,14 +435,7 @@ def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
 
                 _add_log(db, job_id, "generation", f"Node {node_num}: type=image, model={model}, res={resolution}, refs={len(refs)}")
 
-            # Create provider
-            provider = get_provider(
-                model=model,
-                mode=mode,
-                quality=quality,
-                duration=duration,
-                aspect_ratio=aspect_ratio,
-            )
+
 
             if category == "image":
                 result = provider.generate_image(prompt=prompt, **gen_kwargs)
