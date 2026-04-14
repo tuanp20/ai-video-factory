@@ -391,7 +391,8 @@ def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
                     return url
                 if url.startswith('/'):
                     # Local path — upload to Plenxai to get public URL
-                    local_path = os.path.join('/app', url.lstrip('/'))
+                    # Files at /static/uploads/... are stored under /app/app/static/uploads/...
+                    local_path = os.path.join('/app/app', url.lstrip('/'))
                     if os.path.exists(local_path):
                         public_url = provider.upload_image(local_path)
                         logger.info(f"[Job {job_id}] Uploaded local image to Plenxai: {url} → {public_url}")
