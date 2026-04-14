@@ -111,12 +111,15 @@ class DrivePreviewRequest(BaseModel):
     folder_url: str
 
 class WorkflowNodeConfig(BaseModel):
+    category: str = "video"
     model: str = "kling-3.0"
     mode: str = "i2v"
     quality: str = "1080p"
     duration: int = 5
     aspect_ratio: str = "9:16"
+    resolution: str = "1k"
     prompt: str = ""
+    negative_prompt: Optional[str] = None
     script_text: Optional[str] = None
     image_url: Optional[str] = None
 
