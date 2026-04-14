@@ -1365,65 +1365,60 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
             </div>
 
             {/* ===== Tab: Google Drive ===== */}
-            {activeTab === 'drive' && (
-                <div className="card">
-                    <div className="card-header">
-                        <span className="phase-badge" style={{ background: 'linear-gradient(135deg, #4285f4, #34a853)' }}>Drive</span>
-                        <h3>📁 Lấy ảnh từ Google Drive</h3>
-                    </div>
-                    <DriveTabContent
-                        addToast={addToast}
-                        onImportedImages={handleDriveImported}
-                        nodeCount={nodes.length}
-                    />
-                    {driveImages.length > 0 && (
-                        <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: 'linear-gradient(135deg, rgba(66,133,244,0.08), rgba(52,168,83,0.08))', borderRadius: 'var(--radius-lg)', border: '1px solid rgba(66,133,244,0.2)' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
-                                <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>✅ <strong>{driveImages.length}</strong> ảnh đã sẵn sàng cho Workflow</span>
-                                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                    <button className="btn btn-primary btn-sm" onClick={() => setActiveTab('builder')}>🔨 Tạo Workflow mới</button>
-                                    <button className="btn btn-success btn-sm" onClick={() => setActiveTab('runner')} disabled={savedWfs.length === 0}>▶️ Chạy Workflow có sẵn</button>
-                                </div>
+            <div className="card" style={{ display: activeTab === 'drive' ? 'block' : 'none' }}>
+                <div className="card-header">
+                    <span className="phase-badge" style={{ background: 'linear-gradient(135deg, #4285f4, #34a853)' }}>Drive</span>
+                    <h3>📁 Lấy ảnh từ Google Drive</h3>
+                </div>
+                <DriveTabContent
+                    addToast={addToast}
+                    onImportedImages={handleDriveImported}
+                    nodeCount={nodes.length}
+                />
+                {driveImages.length > 0 && (
+                    <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: 'linear-gradient(135deg, rgba(66,133,244,0.08), rgba(52,168,83,0.08))', borderRadius: 'var(--radius-lg)', border: '1px solid rgba(66,133,244,0.2)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>✅ <strong>{driveImages.length}</strong> ảnh đã sẵn sàng cho Workflow</span>
+                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <button className="btn btn-primary btn-sm" onClick={() => setActiveTab('builder')}>🔨 Tạo Workflow mới</button>
+                                <button className="btn btn-success btn-sm" onClick={() => setActiveTab('runner')} disabled={savedWfs.length === 0}>▶️ Chạy Workflow có sẵn</button>
                             </div>
                         </div>
-                    )}
-                </div>
-            )}
+                    </div>
+                )}
+            </div>
 
             {/* ===== Luồng 1: Builder ===== */}
-            {activeTab === 'builder' && (
-                <div className="card">
-                    <div className="card-header">
-                        <span className="phase-badge">Builder</span>
-                        <h3>Tạo workflow mới</h3>
-                    </div>
-
-                    {nodes.map((node, idx) => renderNodeCard(node, idx, true))}
-
-                    <button className="wf-add-node-btn" onClick={addNode}>➕ Thêm Node</button>
-
-                    <div className="wf-actions">
-                        <button className="btn btn-primary btn-lg" style={{ flex: 1 }} disabled={running} onClick={runWorkflow}>
-                            {running && <span className="spinner"></span>}
-                            ▶️ Chạy Workflow ({nodes.length} nodes)
-                        </button>
-                        <button className="btn btn-success btn-lg" onClick={() => setShowSave(true)}>
-                            💾 Lưu Workflow
-                        </button>
-                    </div>
-
-                    {jobResult && (
-                        <div className="result-box show" style={{ marginTop: '1rem' }}>
-                            <h3 style={{ color: 'var(--accent-secondary)', fontSize: '0.95rem' }}>✅ Job #{jobResult.id} đã được tạo</h3>
-                            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Trạng thái: <span className={`badge badge-${jobResult.status}`}>{jobResult.status}</span> — Kiểm tra trong trang Dashboard.</p>
-                        </div>
-                    )}
+            <div className="card" style={{ display: activeTab === 'builder' ? 'block' : 'none' }}>
+                <div className="card-header">
+                    <span className="phase-badge">Builder</span>
+                    <h3>Tạo workflow mới</h3>
                 </div>
-            )}
+
+                {nodes.map((node, idx) => renderNodeCard(node, idx, true))}
+
+                <button className="wf-add-node-btn" onClick={addNode}>➕ Thêm Node</button>
+
+                <div className="wf-actions">
+                    <button className="btn btn-primary btn-lg" style={{ flex: 1 }} disabled={running} onClick={runWorkflow}>
+                        {running && <span className="spinner"></span>}
+                        ▶️ Chạy Workflow ({nodes.length} nodes)
+                    </button>
+                    <button className="btn btn-success btn-lg" onClick={() => setShowSave(true)}>
+                        💾 Lưu Workflow
+                    </button>
+                </div>
+
+                {jobResult && (
+                    <div className="result-box show" style={{ marginTop: '1rem' }}>
+                        <h3 style={{ color: 'var(--accent-secondary)', fontSize: '0.95rem' }}>✅ Job #{jobResult.id} đã được tạo</h3>
+                        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Trạng thái: <span className={`badge badge-${jobResult.status}`}>{jobResult.status}</span> — Kiểm tra trong trang Dashboard.</p>
+                    </div>
+                )}
+            </div>
 
             {/* ===== Luồng 2: Runner ===== */}
-            {activeTab === 'runner' && (
-                <div>
+            <div style={{ display: activeTab === 'runner' ? 'block' : 'none' }}>
                     <div className="card">
                         <div className="card-header">
                             <span className="phase-badge phase-badge-merge">Runner</span>
@@ -1501,8 +1496,7 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
                             </button>
                         </div>
                     )}
-                </div>
-            )}
+            </div>
 
             {/* Save Modal */}
             <div className={`save-modal-overlay ${showSave ? 'show' : ''}`} onClick={() => setShowSave(false)}>
