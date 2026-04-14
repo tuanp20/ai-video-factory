@@ -968,7 +968,7 @@ function DriveTabContent({ addToast, onImportedImages, nodeCount, nodeLabels }) 
 // =============================================
 
 function defaultNode() {
-    return { model: 'kling-3.0', mode: 'i2v', quality: '1080p', duration: 5, aspect_ratio: '9:16', prompt: '', script_text: '', image_url: '' };
+    return { category: 'video', model: 'kling-3.0', mode: 'i2v', quality: '1080p', duration: 5, aspect_ratio: '9:16', prompt: '', script_text: '', image_url: '', resolution: '1k', negative_prompt: '' };
 }
 
 function WorkflowBuilderPage({ addToast, setLoading }) {
@@ -1174,6 +1174,7 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
     // --- Render Node Card ---
     function renderNodeCard(node, idx, editable = true) {
         const isFirst = idx === 0;
+        const isImage = node.category === 'image';
         const modeOpts = node.model === 'veo-3-fast'
             ? [['t2v', 'Text-to-Video'], ['i2v', 'Image-to-Video']]
             : [['i2v', 'Image-to-Video']];
@@ -1194,15 +1195,28 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
                         {editable && !isFirst && <button className="wf-node-remove" onClick={() => removeNode(idx)} title="Xóa node">🗑️</button>}
                     </div>
 
+                    {/* Category Selection */}
+                    <div className="form-group">
+                        <label>Loại Node</label>
+                        {editable ? (
+                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <button className={`btn btn-sm ${!isImage ? 'btn-primary' : 'btn-outline'}`} onClick={() => { updateNode(idx, 'category', 'video'); updateNode(idx, 'model', 'kling-3.0'); updateNode(idx, 'aspect_ratio', '9:16'); }}>🎬 Tạo Video</button>
+                                <button className={`btn btn-sm ${isImage ? 'btn-primary' : 'btn-outline'}`} onClick={() => { updateNode(idx, 'category', 'image'); updateNode(idx, 'model', 'nano-banana-pro'); updateNode(idx, 'aspect_ratio', '1:1'); }}>🖼️ Tạo Ảnh</button>
+                            </div>
+                        ) : (
+                            <div><strong>{isImage ? '🖼️ Tạo Ảnh' : '🎬 Tạo Video'}</strong></div>
+                        )}
+                    </div>
+
                     {!isFirst && (
                         <div className="wf-auto-input">
-                            📥 Input tự động: Output video từ Node {idx} (thumbnail/frame)
+                            📥 Input tự động: Output {isImage ? 'ảnh' : 'video'} từ Node {idx}
                         </div>
                     )}
 
                     {/* Image Upload */}
                     <div className="form-group">
-                        <label>🖼️ {isFirst ? 'Ảnh nguồn' : 'Ảnh bổ sung (end frame)'}</label>
+                        <label>🖼️ {isFirst ? 'Ảnh nguồn' : 'Ảnh tham khảo bổ sung'}</label>
                         {editable ? (
                             <div>
                                 <div className="dropzone" style={{ padding: '1rem', position: 'relative' }}>
@@ -1229,42 +1243,86 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
                         <div className="form-group">
                             <label>AI Model</label>
                             {editable ? (
-                                <select className="form-select" value={node.model} onChange={e => { updateNode(idx, 'model', e.target.value); if (e.target.value === 'veo-3-fast') updateNode(idx, 'mode', 't2v'); else updateNode(idx, 'mode', 'i2v'); }}>
-                                    <option value="kling-3.0">Kling 3.0</option>
-                                    <option value="kling-motion">Kling Motion</option>
-                                    <option value="veo-3-fast">Veo 3 Fast</option>
+                                <select className="form-select" value={node.model} onChange={e => { updateNode(idx, 'model', e.target.value); if (e.target.value === 'veo-3-fast') updateNode(idx, 'mode', 't2v'); else if (!isImage) updateNode(idx, 'mode', 'i2v'); }}>
+                                    {!isImage ? (
+                                        <>
+                                            <option value="kling-3.0">Kling 3.0</option>
+                                            <option value="kling-motion">Kling Motion</option>
+                                            <option value="veo-3-fast">Veo 3 Fast</option>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <option value="nano-banana-pro">Nano Banana Pro</option>
+                                            <option value="nano-banana-2">Nano Banana 2</option>
+                                        </>
+                                    )}
                                 </select>
                             ) : <div><code style={{ color: 'var(--accent-primary)' }}>{node.model}</code></div>}
                         </div>
-                        <div className="form-group">
-                            <label>Chế độ</label>
-                            {editable ? (
-                                <select className="form-select" value={node.mode} onChange={e => updateNode(idx, 'mode', e.target.value)}>
-                                    {modeOpts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                                </select>
-                            ) : <div><code>{node.mode}</code></div>}
-                        </div>
+                        
+                        {!isImage && (
+                            <div className="form-group">
+                                <label>Chế độ</label>
+                                {editable ? (
+                                    <select className="form-select" value={node.mode} onChange={e => updateNode(idx, 'mode', e.target.value)}>
+                                        {modeOpts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                                    </select>
+                                ) : <div><code>{node.mode}</code></div>}
+                            </div>
+                        )}
                     </div>
-                    <div className="form-row">
-                        <div className="form-group">
-                            <label>Chất lượng</label>
-                            {editable ? <select className="form-select" value={node.quality} onChange={e => updateNode(idx, 'quality', e.target.value)}><option value="1080p">1080p</option><option value="720p">720p</option></select> : <div><code>{node.quality}</code></div>}
+
+                    {!isImage ? (
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label>Chất lượng</label>
+                                {editable ? <select className="form-select" value={node.quality} onChange={e => updateNode(idx, 'quality', e.target.value)}><option value="1080p">1080p</option><option value="720p">720p</option></select> : <div><code>{node.quality}</code></div>}
+                            </div>
+                            <div className="form-group">
+                                <label>Thời lượng (giây)</label>
+                                {editable ? <input type="number" className="form-input" value={node.duration} onChange={e => updateNode(idx, 'duration', parseInt(e.target.value) || 5)} min="3" max="15" /> : <div><code>{node.duration}s</code></div>}
+                            </div>
                         </div>
-                        <div className="form-group">
-                            <label>Thời lượng (giây)</label>
-                            {editable ? <input type="number" className="form-input" value={node.duration} onChange={e => updateNode(idx, 'duration', parseInt(e.target.value) || 5)} min="3" max="15" /> : <div><code>{node.duration}s</code></div>}
+                    ) : (
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label>Độ phân giải</label>
+                                {editable ? <select className="form-select" value={node.resolution} onChange={e => updateNode(idx, 'resolution', e.target.value)}><option value="1k">1K</option><option value="2k">2K</option><option value="4k">4K</option></select> : <div><code>{node.resolution}</code></div>}
+                            </div>
                         </div>
-                    </div>
+                    )}
+                    
                     <div className="form-group">
                         <label>Tỷ lệ</label>
-                        {editable ? <select className="form-select" value={node.aspect_ratio} onChange={e => updateNode(idx, 'aspect_ratio', e.target.value)}><option value="9:16">9:16 (TikTok)</option><option value="16:9">16:9 (YouTube)</option><option value="1:1">1:1</option></select> : <div><code>{node.aspect_ratio}</code></div>}
+                        {editable ? (
+                            <select className="form-select" value={node.aspect_ratio} onChange={e => updateNode(idx, 'aspect_ratio', e.target.value)}>
+                                <option value="1:1">1:1</option>
+                                <option value="16:9">16:9 (YouTube)</option>
+                                <option value="9:16">9:16 (TikTok)</option>
+                                {isImage && node.model === 'nano-banana-2' && (
+                                    <>
+                                        <option value="4:3">4:3</option>
+                                        <option value="3:4">3:4</option>
+                                    </>
+                                )}
+                            </select>
+                        ) : <div><code>{node.aspect_ratio}</code></div>}
                     </div>
+
                     <div className="form-group">
-                        <label>Prompt tạo Video {isFirst ? '*' : ''}</label>
-                        {editable ? <textarea className="form-textarea" rows="2" placeholder="Mô tả cảnh video..." value={node.prompt} onChange={e => updateNode(idx, 'prompt', e.target.value)}></textarea> : <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', background: 'var(--bg-tertiary)', padding: '0.5rem 0.75rem', borderRadius: '8px' }}>{node.prompt || <span className="text-muted">—</span>}</div>}
+                        <label>Prompt tạo {isImage ? 'Ảnh' : 'Video'} {isFirst ? '*' : ''}</label>
+                        {editable ? <textarea className="form-textarea" rows="2" placeholder={`Mô tả ${isImage ? 'ảnh' : 'cảnh video'}...`} value={node.prompt} onChange={e => updateNode(idx, 'prompt', e.target.value)}></textarea> : <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', background: 'var(--bg-tertiary)', padding: '0.5rem 0.75rem', borderRadius: '8px' }}>{node.prompt || <span className="text-muted">—</span>}</div>}
                     </div>
+
+                    {isImage && (
+                        <div className="form-group">
+                            <label>Negative Prompt</label>
+                            {editable ? <textarea className="form-textarea" rows="2" placeholder="Những gì không muốn xuất hiện..." value={node.negative_prompt} onChange={e => updateNode(idx, 'negative_prompt', e.target.value)}></textarea> : <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', background: 'var(--bg-tertiary)', padding: '0.5rem 0.75rem', borderRadius: '8px' }}>{node.negative_prompt || <span className="text-muted">—</span>}</div>}
+                        </div>
+                    )}
+
                     <div className="form-group">
-                        <label>Kịch bản TTS</label>
+                        <label>Kịch bản TTS {isImage && '(Chỉ dùng cho bước merge video)'}</label>
                         {editable ? <textarea className="form-textarea" rows="2" placeholder="Kịch bản đọc (tuỳ chọn)..." value={node.script_text} onChange={e => updateNode(idx, 'script_text', e.target.value)}></textarea> : <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{node.script_text || '(không có)'}</div>}
                     </div>
                 </div>

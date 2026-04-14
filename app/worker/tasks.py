@@ -359,38 +359,58 @@ def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
             job.current_step = f"node_{node_num}"
             db.commit()
 
-            # Resolve image inputs
+            # Resolve inputs
+            category = node.get("category", "video")
             model = node.get("model", "kling-3.0")
             mode = node.get("mode", "i2v")
             quality = node.get("quality", "1080p")
             duration = node.get("duration", 5)
             aspect_ratio = node.get("aspect_ratio", "9:16")
+            resolution = node.get("resolution", "1k")
             prompt = node.get("prompt", "")
+            negative_prompt = node.get("negative_prompt", "")
             user_image_url = node.get("image_url")
 
             # Build provider kwargs
             gen_kwargs = {}
 
-            if mode == "i2v":
-                if i == 0:
-                    # Node 1: use user's uploaded image as start
-                    if user_image_url:
-                        gen_kwargs["start_image_url"] = user_image_url
-                else:
-                    # Node 2+: use previous output as start, user image as end
-                    if prev_thumbnail_url:
-                        gen_kwargs["start_image_url"] = prev_thumbnail_url
-                    if user_image_url:
-                        gen_kwargs["end_image_url"] = user_image_url
+            if category == "video":
+                if mode == "i2v":
+                    if i == 0:
+                        # Node 1: use user's uploaded image as start
+                        if user_image_url:
+                            gen_kwargs["start_image_url"] = user_image_url
+                    else:
+                        # Node 2+: use previous output as start, user image as end
+                        if prev_thumbnail_url:
+                            gen_kwargs["start_image_url"] = prev_thumbnail_url
+                        if user_image_url:
+                            gen_kwargs["end_image_url"] = user_image_url
 
-            _add_log(
-                db, job_id, "generation",
-                f"Node {node_num}: model={model}, mode={mode}, "
-                f"start_img={'yes' if gen_kwargs.get('start_image_url') else 'no'}, "
-                f"end_img={'yes' if gen_kwargs.get('end_image_url') else 'no'}"
-            )
+                _add_log(
+                    db, job_id, "generation",
+                    f"Node {node_num}: type=video, model={model}, mode={mode}, "
+                    f"start_img={'yes' if gen_kwargs.get('start_image_url') else 'no'}, "
+                    f"end_img={'yes' if gen_kwargs.get('end_image_url') else 'no'}"
+                )
+            else:
+                # category == "image"
+                refs = []
+                if user_image_url:
+                    refs.append(user_image_url)
+                if i > 0 and prev_thumbnail_url:
+                    refs.append(prev_thumbnail_url)
+                if refs:
+                    gen_kwargs["references_urls"] = refs
+                
+                if resolution:
+                    gen_kwargs["resolution"] = resolution
+                if negative_prompt:
+                    gen_kwargs["negative_prompt"] = negative_prompt
 
-            # Create provider and generate
+                _add_log(db, job_id, "generation", f"Node {node_num}: type=image, model={model}, res={resolution}")
+
+            # Create provider
             provider = get_provider(
                 model=model,
                 mode=mode,
@@ -399,18 +419,23 @@ def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
                 aspect_ratio=aspect_ratio,
             )
 
-            result = provider.generate_video(prompt=prompt, **gen_kwargs)
+            if category == "image":
+                result = provider.generate_image(prompt=prompt, **gen_kwargs)
+            else:
+                result = provider.generate_video(prompt=prompt, **gen_kwargs)
+
             result_url = result.get("result_url")
             result_thumbnail = result.get("thumbnail_url")
 
-            _add_log(db, job_id, "generation", f"Node {node_num}: Video generated → {result_url}")
+            _add_log(db, job_id, "generation", f"Node {node_num}: Output generated → {result_url}")
 
-            # Download this node's video
-            node_video_path = os.path.join(temp_dir, f"node_{node_num}.mp4")
-            download_file_from_url(result_url, node_video_path)
-            video_paths.append(node_video_path)
+            if category == "video":
+                # Download this node's video
+                node_video_path = os.path.join(temp_dir, f"node_{node_num}.mp4")
+                download_file_from_url(result_url, node_video_path)
+                video_paths.append(node_video_path)
 
-            # Save thumbnail for next node's input
+            # Save thumbnail for next node's input. For image, result_url IS the image.
             prev_thumbnail_url = result_thumbnail or result_url
 
             # Store first node's result as raw_video_url
@@ -452,16 +477,22 @@ def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
             _add_log(db, job_id, "tts", "No script text, skipping TTS")
 
         # Concat all node videos + optional audio
-        final_path = os.path.join(temp_dir, "final_video.mp4")
-        concat_videos_with_audio(
-            video_paths=video_paths,
-            audio_path=audio_path,
-            output_path=final_path,
-        )
-        _add_log(db, job_id, "ffmpeg", f"Post-production: concatenated {len(video_paths)} segments")
+        if len(video_paths) > 0:
+            final_path = os.path.join(temp_dir, "final_video.mp4")
+            concat_videos_with_audio(
+                video_paths=video_paths,
+                audio_path=audio_path,
+                output_path=final_path,
+            )
+            _add_log(db, job_id, "ffmpeg", f"Post-production: concatenated {len(video_paths)} segments")
 
-        # Upload final video
-        final_url = upload_file_from_path(final_path, f"final_job_{job_id}.mp4", "video/mp4")
+            # Upload final video
+            final_url = upload_file_from_path(final_path, f"final_job_{job_id}.mp4", "video/mp4")
+        else:
+            # Workflow produced only images
+            _add_log(db, job_id, "ffmpeg", "Output is Image only, skipping ffmpeg concat")
+            final_url = prev_thumbnail_url
+
         job.final_video_url = final_url
         job.status = JobStatus.PENDING_REVIEW
         db.commit()
