@@ -247,7 +247,6 @@ function ScrapePanel({ onScrapeResult, addToast, setLoading }) {
                 <button className={`tab-btn ${activeTab === 'single' ? 'active' : ''}`} onClick={() => setActiveTab('single')}>Đơn lẻ (Single)</button>
                 <button className={`tab-btn ${activeTab === 'bulk' ? 'active' : ''}`} onClick={() => setActiveTab('bulk')}>Hàng loạt (Bulk)</button>
                 <button className={`tab-btn ${activeTab === 'sheet' ? 'active' : ''}`} onClick={() => setActiveTab('sheet')}>📊 Google Sheet</button>
-                <button className={`tab-btn ${activeTab === 'drive' ? 'active' : ''}`} onClick={() => setActiveTab('drive')}>📁 Google Drive</button>
             </div>
 
             {activeTab === 'single' && (
@@ -441,10 +440,7 @@ function ScrapePanel({ onScrapeResult, addToast, setLoading }) {
                 </div>
             )}
 
-            {/* ===== Google Drive Tab ===== */}
-            {activeTab === 'drive' && (
-                <DriveTabContent addToast={addToast} onSelectImage={(url) => { onScrapeResult({ image_url: url, title: '', script: '', video_prompts: [] }); }} />
-            )}
+
 
             {/* Single Result */}
             {result && activeTab === 'single' && (
@@ -813,12 +809,13 @@ function SubmitPanel({ prefill, addToast, setLoading, onJobCreated }) {
 // Google Drive Tab Content
 // =============================================
 
-function DriveTabContent({ addToast, onSelectImage }) {
+function DriveTabContent({ addToast, onImportedImages, nodeCount, nodeLabels }) {
     const [driveUrl, setDriveUrl] = useState('');
     const [loading, setLoading] = useState(false);
     const [driveData, setDriveData] = useState(null);
     const [selected, setSelected] = useState([]);
     const [importing, setImporting] = useState(false);
+    const [importedImages, setImportedImages] = useState([]);
 
     async function handlePreview() {
         if (!driveUrl.trim()) { addToast('Vui lòng dán link folder Google Drive', 'error'); return; }
@@ -826,6 +823,7 @@ function DriveTabContent({ addToast, onSelectImage }) {
         setLoading(true);
         setDriveData(null);
         setSelected([]);
+        setImportedImages([]);
         try {
             const res = await fetch('/api/drive/preview', {
                 method: 'POST',
@@ -850,6 +848,16 @@ function DriveTabContent({ addToast, onSelectImage }) {
         setSelected(prev => prev.includes(fileId) ? prev.filter(id => id !== fileId) : [...prev, fileId]);
     }
 
+    function selectAll() {
+        if (!driveData) return;
+        const pendingIds = driveData.images.filter(img => img.status !== 'done').map(img => img.drive_file_id);
+        setSelected(pendingIds);
+    }
+
+    function deselectAll() {
+        setSelected([]);
+    }
+
     async function handleImport() {
         if (selected.length === 0) { addToast('Chọn ít nhất 1 ảnh', 'error'); return; }
         setImporting(true);
@@ -860,11 +868,14 @@ function DriveTabContent({ addToast, onSelectImage }) {
             const res = await fetch('/api/drive/import', { method: 'POST', body: formData });
             const data = await res.json();
             if (data.success) {
-                addToast(`Import thành công ${data.imported}/${data.total} ảnh`, 'success');
-                // Use the first imported image
-                const firstOk = data.results.find(r => r.success && r.image_url);
-                if (firstOk) onSelectImage(firstOk.image_url);
-                handlePreview(); // Refresh
+                const successResults = (data.results || []).filter(r => r.success && r.image_url);
+                addToast(`Import thành công ${successResults.length}/${data.total} ảnh`, 'success');
+                setImportedImages(successResults);
+                // Auto pass all imported images to parent
+                if (onImportedImages && successResults.length > 0) {
+                    onImportedImages(successResults.map(r => ({ url: r.image_url, name: r.file_name || 'Drive Image' })));
+                }
+                handlePreview(); // Refresh status
             } else {
                 addToast(data.detail || 'Lỗi import', 'error');
             }
@@ -876,32 +887,38 @@ function DriveTabContent({ addToast, onSelectImage }) {
     }
 
     const statusColors = { pending: { bg: '#eef4ff', color: '#155eef' }, done: { bg: '#e6f9f0', color: '#067647' }, processing: { bg: '#fff8e6', color: '#b54708' }, failed: { bg: '#fef3f2', color: '#b42318' } };
+    const pendingCount = driveData ? driveData.images.filter(img => img.status !== 'done').length : 0;
 
     return (
         <div>
             <div className="form-group">
                 <label>Link folder Google Drive</label>
                 <div style={{ display: 'flex', gap: '0.75rem' }}>
-                    <input type="text" className="form-input" placeholder="https://drive.google.com/drive/folders/xxxxx" value={driveUrl} onChange={e => setDriveUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && handlePreview()} style={{ flex: 1 }} />
-                    <button className="btn btn-primary" disabled={loading} onClick={handlePreview}>
+                    <input type="text" className="form-input" placeholder="https://drive.google.com/drive/folders/xxxxx" value={driveUrl} onChange={e => setDriveUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && handlePreview()} style={{ flex: 1 }} id="drive-url-input" />
+                    <button className="btn btn-primary" disabled={loading} onClick={handlePreview} id="drive-preview-btn">
                         {loading && <span className="spinner"></span>}
                         🔍 Preview
                     </button>
                 </div>
-                <div className="sheet-hint">Folder cần được share với email Service Account: ai-video-factory@xuongmedia-v3.iam.gserviceaccount.com</div>
+                <div className="sheet-hint">Folder cần được share với email Service Account. Ảnh sau khi import sẽ được tự động gán vào các Node trong Workflow.</div>
             </div>
 
             {driveData && (
                 <div>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
                         <div>
                             <strong>📁 {driveData.folder_name}</strong>
                             <span className="text-muted" style={{ fontSize: '0.8rem', marginLeft: '0.5rem' }}>{driveData.total_images} ảnh · {driveData.pending} chưa xử lý · {driveData.done} đã xong</span>
                         </div>
-                        <button className="btn btn-success btn-sm" disabled={importing || selected.length === 0} onClick={handleImport}>
-                            {importing && <span className="spinner"></span>}
-                            ⬇️ Import {selected.length} ảnh
-                        </button>
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            <button className="btn btn-outline btn-sm" onClick={selected.length === pendingCount ? deselectAll : selectAll}>
+                                {selected.length === pendingCount && pendingCount > 0 ? '☐ Bỏ chọn tất cả' : `☑ Chọn tất cả (${pendingCount})`}
+                            </button>
+                            <button className="btn btn-success btn-sm" disabled={importing || selected.length === 0} onClick={handleImport} id="drive-import-btn">
+                                {importing && <span className="spinner"></span>}
+                                ⬇️ Import {selected.length} ảnh → Workflow
+                            </button>
+                        </div>
                     </div>
                     <div className="drive-grid">
                         {driveData.images.map(img => {
@@ -919,6 +936,29 @@ function DriveTabContent({ addToast, onSelectImage }) {
                     </div>
                 </div>
             )}
+
+            {/* Imported images — assign to nodes */}
+            {importedImages.length > 0 && (
+                <div className="drive-imported-section">
+                    <h4 style={{ margin: '1.25rem 0 0.75rem', color: 'var(--accent-secondary)', fontSize: '0.95rem' }}>
+                        ✅ Đã import {importedImages.length} ảnh — Ảnh sẽ được gán tự động vào các Node theo thứ tự
+                    </h4>
+                    <div className="drive-imported-grid">
+                        {importedImages.map((img, i) => (
+                            <div key={i} className="drive-imported-item">
+                                <img src={img.url} alt={img.name} className="drive-imported-thumb" />
+                                <div className="drive-imported-label">
+                                    <span className="drive-imported-node">Node {i + 1}</span>
+                                    <span className="drive-imported-name">{img.name}</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="sheet-hint" style={{ marginTop: '0.5rem' }}>
+                        💡 Chuyển sang tab "🔨 Tạo Workflow" hoặc "▶️ Chạy Workflow" để xem ảnh đã được gán vào các Node.
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -932,7 +972,7 @@ function defaultNode() {
 }
 
 function WorkflowBuilderPage({ addToast, setLoading }) {
-    const [activeTab, setActiveTab] = useState('builder');
+    const [activeTab, setActiveTab] = useState('drive');
     // --- Builder state (Luồng 1) ---
     const [nodes, setNodes] = useState([defaultNode()]);
     const [running, setRunning] = useState(false);
@@ -948,6 +988,8 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
     const [runnerImages, setRunnerImages] = useState([]);
     const [runnerRunning, setRunnerRunning] = useState(false);
     const [runnerTitle, setRunnerTitle] = useState('');
+    // --- Drive images for workflow ---
+    const [driveImages, setDriveImages] = useState([]);
 
     // Load saved workflows
     useEffect(() => {
@@ -955,6 +997,37 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
             if (data.success) setSavedWfs(data.workflows);
         }).catch(() => {});
     }, [activeTab]);
+
+    // Handle imported images from Drive
+    function handleDriveImported(images) {
+        setDriveImages(images);
+        // Auto-assign to Builder nodes
+        setNodes(prev => {
+            // Ensure enough nodes exist for all images
+            let updated = [...prev];
+            while (updated.length < images.length && updated.length < 10) {
+                updated.push(defaultNode());
+            }
+            // Assign image URLs to nodes
+            return updated.map((n, i) => {
+                if (i < images.length) {
+                    return { ...n, image_url: images[i].url };
+                }
+                return n;
+            });
+        });
+        // Also assign to Runner images if a workflow is selected
+        if (selectedWf) {
+            setRunnerImages(prev => {
+                const updated = [...prev];
+                images.forEach((img, i) => {
+                    if (i < updated.length) updated[i] = img.url;
+                });
+                return updated;
+            });
+        }
+        addToast(`✅ ${images.length} ảnh từ Drive đã được gán vào các Node`, 'success');
+    }
 
     // --- Builder helpers ---
     function updateNode(idx, field, value) {
@@ -1051,7 +1124,12 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
     // --- Runner helpers (Luồng 2) ---
     function selectSavedWf(wf) {
         setSelectedWf(wf);
-        setRunnerImages(new Array(wf.nodes.length).fill(''));
+        // Auto-assign Drive images to runner slots if available
+        const images = new Array(wf.nodes.length).fill('');
+        driveImages.forEach((img, i) => {
+            if (i < images.length) images[i] = img.url;
+        });
+        setRunnerImages(images);
         setRunnerTitle('');
     }
 
@@ -1126,12 +1204,20 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
                     <div className="form-group">
                         <label>🖼️ {isFirst ? 'Ảnh nguồn' : 'Ảnh bổ sung (end frame)'}</label>
                         {editable ? (
-                            <div className="dropzone" style={{ padding: '1rem', position: 'relative' }}>
-                                <input type="file" accept="image/*" onChange={e => handleUploadForNode(e.target.files[0], idx)} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
-                                {node.image_url
-                                    ? <div className="dropzone-preview"><img src={node.image_url} alt="" /><div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>✅ Đã upload</div></div>
-                                    : <div className="dropzone-text">Click để upload ảnh</div>
-                                }
+                            <div>
+                                <div className="dropzone" style={{ padding: '1rem', position: 'relative' }}>
+                                    <input type="file" accept="image/*" onChange={e => handleUploadForNode(e.target.files[0], idx)} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
+                                    {node.image_url
+                                        ? <div className="dropzone-preview">
+                                            <img src={node.image_url} alt="" />
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>✅ {node.image_url.includes('r2.') || node.image_url.includes('cloudflare') ? 'Từ Drive' : 'Đã upload'}</div>
+                                          </div>
+                                        : <div className="dropzone-text">Click để upload ảnh hoặc import từ tab Google Drive</div>
+                                    }
+                                </div>
+                                {node.image_url && (
+                                    <button className="btn btn-outline btn-sm" style={{ marginTop: '0.35rem', fontSize: '0.75rem' }} onClick={() => updateNode(idx, 'image_url', '')}>✕ Xóa ảnh</button>
+                                )}
                             </div>
                         ) : (
                             <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Ảnh sẽ được upload khi chạy</div>
@@ -1194,9 +1280,39 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
             </div>
 
             <div className="tab-headers" style={{ marginBottom: '1.5rem' }}>
-                <button className={`tab-btn ${activeTab === 'builder' ? 'active' : ''}`} onClick={() => setActiveTab('builder')}>🔨 Tạo Workflow</button>
+                <button className={`tab-btn ${activeTab === 'drive' ? 'active' : ''}`} onClick={() => setActiveTab('drive')}>📁 Google Drive</button>
+                <button className={`tab-btn ${activeTab === 'builder' ? 'active' : ''}`} onClick={() => setActiveTab('builder')}>
+                    🔨 Tạo Workflow
+                    {driveImages.length > 0 && <span className="tab-badge">{driveImages.length} ảnh</span>}
+                </button>
                 <button className={`tab-btn ${activeTab === 'runner' ? 'active' : ''}`} onClick={() => setActiveTab('runner')}>▶️ Chạy Workflow đã lưu ({savedWfs.length})</button>
             </div>
+
+            {/* ===== Tab: Google Drive ===== */}
+            {activeTab === 'drive' && (
+                <div className="card">
+                    <div className="card-header">
+                        <span className="phase-badge" style={{ background: 'linear-gradient(135deg, #4285f4, #34a853)' }}>Drive</span>
+                        <h3>📁 Lấy ảnh từ Google Drive</h3>
+                    </div>
+                    <DriveTabContent
+                        addToast={addToast}
+                        onImportedImages={handleDriveImported}
+                        nodeCount={nodes.length}
+                    />
+                    {driveImages.length > 0 && (
+                        <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: 'linear-gradient(135deg, rgba(66,133,244,0.08), rgba(52,168,83,0.08))', borderRadius: 'var(--radius-lg)', border: '1px solid rgba(66,133,244,0.2)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>✅ <strong>{driveImages.length}</strong> ảnh đã sẵn sàng cho Workflow</span>
+                                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                    <button className="btn btn-primary btn-sm" onClick={() => setActiveTab('builder')}>🔨 Tạo Workflow mới</button>
+                                    <button className="btn btn-success btn-sm" onClick={() => setActiveTab('runner')} disabled={savedWfs.length === 0}>▶️ Chạy Workflow có sẵn</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* ===== Luồng 1: Builder ===== */}
             {activeTab === 'builder' && (
@@ -1289,10 +1405,16 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
                                         <div className="dropzone" style={{ padding: '0.75rem', position: 'relative' }}>
                                             <input type="file" accept="image/*" onChange={e => handleRunnerUpload(e.target.files[0], idx)} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} />
                                             {runnerImages[idx]
-                                                ? <div className="dropzone-preview"><img src={runnerImages[idx]} alt="" style={{ maxHeight: '80px' }} /><div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>✅</div></div>
-                                                : <div className="dropzone-text" style={{ fontSize: '0.8rem' }}>Click upload ảnh</div>
+                                                ? <div className="dropzone-preview">
+                                                    <img src={runnerImages[idx]} alt="" style={{ maxHeight: '80px' }} />
+                                                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>✅ {driveImages[idx] && runnerImages[idx] === driveImages[idx].url ? 'Từ Drive' : 'Đã upload'}</div>
+                                                  </div>
+                                                : <div className="dropzone-text" style={{ fontSize: '0.8rem' }}>Click upload ảnh hoặc import từ tab Drive</div>
                                             }
                                         </div>
+                                        {runnerImages[idx] && (
+                                            <button className="btn btn-outline btn-sm" style={{ marginTop: '0.35rem', fontSize: '0.75rem' }} onClick={() => setRunnerImages(prev => prev.map((img, i) => i === idx ? '' : img))}>✕ Xóa ảnh</button>
+                                        )}
                                     </div>
                                 </div>
                             ))}

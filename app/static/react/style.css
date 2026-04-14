@@ -1648,3 +1648,83 @@ h3 { font-size: 1.125rem; }
     font-size: 0.7rem;
 }
 
+/* --- Tab Badge (image count) --- */
+.tab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    margin-left: 6px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #fff;
+    background: linear-gradient(135deg, #4285f4, #34a853);
+    border-radius: var(--radius-pill);
+    letter-spacing: 0;
+    animation: fadeIn 0.3s ease;
+}
+
+/* --- Drive Imported Images Grid --- */
+.drive-imported-section {
+    margin-top: 0.5rem;
+    padding: 1rem;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-light);
+}
+
+.drive-imported-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.75rem;
+}
+
+.drive-imported-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    box-shadow: var(--shadow-xs);
+    transition: var(--transition);
+}
+
+.drive-imported-item:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+
+.drive-imported-thumb {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    display: block;
+}
+
+.drive-imported-label {
+    padding: 0.4rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.drive-imported-node {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #fff;
+    background: var(--gradient-primary);
+    padding: 1px 8px;
+    border-radius: var(--radius-pill);
+    width: fit-content;
+    letter-spacing: 0.3px;
+}
+
+.drive-imported-name {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
