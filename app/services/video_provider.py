@@ -100,8 +100,8 @@ class PlenxaiAdapter(VideoProvider):
         """
         payload = {
             "prompt": prompt,
-            "model": kwargs.get("model", "nano-banana-pro"),
-            "aspect_ratio": kwargs.get("aspect_ratio", "9:16"),
+            "model": kwargs.get("model", self.model),
+            "aspect_ratio": kwargs.get("aspect_ratio", self.aspect_ratio),
             "resolution": kwargs.get("resolution", "2k"),
         }
 
@@ -170,7 +170,9 @@ class PlenxaiAdapter(VideoProvider):
                     return result
 
                 if status in ("failed", "error"):
-                    raise ProviderError(f"Plenxai task {task_id} failed: {data.get('message')}")
+                    fail_msg = data.get("error_message") or data.get("message") or data.get("error") or data.get("reason") or data.get("detail")
+                    logger.error(f"[Plenxai] Task {task_id} FAILED. Full response: {data}")
+                    raise ProviderError(f"Plenxai task {task_id} failed: {fail_msg}")
 
                 # Still processing — wait and retry
                 logger.debug(f"[Plenxai] Task {task_id} status: {status}, waiting {self.poll_interval}s...")
