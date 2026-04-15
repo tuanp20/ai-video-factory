@@ -34,6 +34,9 @@ class VideoJob(Base):
     workflow_id = Column(String(100), default="default", nullable=False)
     workflow_context = Column(JSON, nullable=True)
     current_step = Column(String(100), nullable=True)
+    total_nodes = Column(Integer, default=1, nullable=False)
+    # Per-node status tracking: [{"node": 1, "status": "completed", "result_url": "...", "thumbnail_url": "..."}, ...]
+    node_statuses = Column(JSON, nullable=True)
 
     # Provider config
     provider = Column(String(50), default="plenxai")
@@ -78,6 +81,8 @@ class VideoJob(Base):
             "workflow_id": self.workflow_id,
             "workflow_context": self.workflow_context,
             "current_step": self.current_step,
+            "total_nodes": self.total_nodes,
+            "node_statuses": self.node_statuses,
             "provider": self.provider,
             "model": self.model,
             "mode": self.mode,

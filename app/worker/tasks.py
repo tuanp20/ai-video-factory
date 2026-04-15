@@ -75,6 +75,11 @@ def process_video_pipeline(self, job_id: int):
             logger.error(f"[Worker] Job {job_id} not found!")
             return {"status": "error", "message": f"Job {job_id} not found"}
 
+        # Idempotency guard: skip if already processing (Celery re-delivery)
+        if job.status in (JobStatus.PROCESSING, JobStatus.RENDERED, JobStatus.PENDING_REVIEW, JobStatus.APPROVED):
+            logger.warning(f"[Worker] Job {job_id} already in status '{job.status.value}', skipping duplicate")
+            return {"status": "skipped", "job_id": job_id, "message": f"Job already {job.status.value}"}
+
         job.status = JobStatus.PROCESSING
         job.celery_task_id = self.request.id
         db.commit()
@@ -344,8 +349,21 @@ def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
             logger.error(f"[WorkflowNodes] Job {job_id} not found!")
             return {"status": "error", "message": f"Job {job_id} not found"}
 
+        # --- Idempotency guard ---
+        # If job is already being processed (e.g. Celery re-delivered the task
+        # due to task_acks_late), skip to avoid duplicate execution.
+        if job.status in (JobStatus.PROCESSING, JobStatus.RENDERED, JobStatus.PENDING_REVIEW, JobStatus.APPROVED):
+            logger.warning(f"[WorkflowNodes] Job {job_id} already in status '{job.status.value}', skipping duplicate execution")
+            return {"status": "skipped", "job_id": job_id, "message": f"Job already {job.status.value}"}
+
         job.status = JobStatus.PROCESSING
         job.celery_task_id = self.request.id
+        job.total_nodes = len(nodes)
+        # Initialize node_statuses: all nodes start as "pending"
+        job.node_statuses = [
+            {"node": i + 1, "status": "pending", "result_url": None, "thumbnail_url": None}
+            for i in range(len(nodes))
+        ]
         db.commit()
         _add_log(db, job_id, "pipeline", f"Multi-node workflow started ({len(nodes)} nodes)")
 
@@ -357,8 +375,12 @@ def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
             node_num = i + 1
             _add_log(db, job_id, "workflow", f"Node {node_num}/{len(nodes)}: Starting")
 
-            # Update current step
+            # Update current step and node status → "processing"
             job.current_step = f"node_{node_num}"
+            statuses = list(job.node_statuses or [])
+            if i < len(statuses):
+                statuses[i] = {**statuses[i], "status": "processing"}
+                job.node_statuses = statuses
             db.commit()
 
             # Resolve inputs
@@ -447,6 +469,18 @@ def process_workflow_nodes_pipeline(self, job_id: int, nodes: list):
             result_thumbnail = result.get("thumbnail_url")
 
             _add_log(db, job_id, "generation", f"Node {node_num}: Output generated → {result_url}")
+
+            # Update node status → "completed"
+            statuses = list(job.node_statuses or [])
+            if i < len(statuses):
+                statuses[i] = {
+                    **statuses[i],
+                    "status": "completed",
+                    "result_url": result_url,
+                    "thumbnail_url": result_thumbnail,
+                }
+                job.node_statuses = statuses
+            db.commit()
 
             if category == "video":
                 # Download this node's video

@@ -446,6 +446,22 @@ async def api_list_jobs(
     }
 
 
+@app.get("/api/jobs/active")
+async def api_active_jobs(db: Session = Depends(get_db)):
+    """Return all jobs with status QUEUED or PROCESSING (for resuming tracking after reload)."""
+    jobs = (
+        db.query(VideoJob)
+        .filter(VideoJob.status.in_([JobStatus.QUEUED, JobStatus.PROCESSING]))
+        .order_by(VideoJob.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    return {
+        "success": True,
+        "jobs": [j.to_dict() for j in jobs],
+    }
+
+
 @app.get("/api/jobs/{job_id}")
 async def api_get_job(job_id: int, db: Session = Depends(get_db)):
     """Get detailed info for a single job, including logs."""
@@ -819,6 +835,7 @@ def api_run_workflow_builder(req: WorkflowBuilderRunRequest, db: Session = Depen
         duration=first_node.duration,
         aspect_ratio=first_node.aspect_ratio,
         status=JobStatus.QUEUED,
+        total_nodes=len(req.nodes),
     )
     db.add(job)
     db.commit()
@@ -882,6 +899,7 @@ def api_run_saved_workflow(
         duration=first_node.get("duration", 5),
         aspect_ratio=first_node.get("aspect_ratio", "9:16"),
         status=JobStatus.QUEUED,
+        total_nodes=len(runtime_nodes),
     )
     db.add(job)
     db.commit()

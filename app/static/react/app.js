@@ -984,23 +984,75 @@ function defaultNode() {
 
 function WorkflowBuilderPage({ addToast, setLoading }) {
     const [activeTab, setActiveTab] = useState('drive');
-    // --- Builder state (Luồng 1) ---
     const [nodes, setNodes] = useState([defaultNode()]);
     const [running, setRunning] = useState(false);
     const [jobResult, setJobResult] = useState(null);
-    // Save modal
     const [showSave, setShowSave] = useState(false);
     const [saveName, setSaveName] = useState('');
     const [saveDesc, setSaveDesc] = useState('');
     const [saving, setSaving] = useState(false);
-    // --- Runner state (Luồng 2) ---
     const [savedWfs, setSavedWfs] = useState([]);
     const [selectedWf, setSelectedWf] = useState(null);
     const [runnerImages, setRunnerImages] = useState([]);
     const [runnerRunning, setRunnerRunning] = useState(false);
     const [runnerTitle, setRunnerTitle] = useState('');
-    // --- Drive images for workflow ---
     const [driveImages, setDriveImages] = useState([]);
+    // --- Active jobs tracking (persists across F5 via localStorage) ---
+    const [activeJobs, setActiveJobs] = useState([]);
+    const activeJobsRef = useRef([]);
+
+    useEffect(() => { activeJobsRef.current = activeJobs; }, [activeJobs]);
+
+    // localStorage helpers
+    const STORAGE_KEY = 'avf_active_job_ids';
+    function _saveIds(ids) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(ids)); } catch(e) {} }
+    function _loadIds() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch(e) { return []; } }
+    function _addId(id) { const ids = _loadIds(); if (!ids.includes(id)) { ids.push(id); _saveIds(ids); } }
+    function _removeId(id) { _saveIds(_loadIds().filter(x => x !== id)); }
+
+    // Poll active jobs for node_statuses
+    const pollActiveJobs = useCallback(async (jobIds) => {
+        if (!jobIds || jobIds.length === 0) return;
+        try {
+            const results = await Promise.all(
+                jobIds.map(id => fetch('/api/jobs/' + id).then(r => r.json()).catch(() => null))
+            );
+            const updated = [];
+            results.forEach(res => {
+                if (!res || !res.success) return;
+                const job = res.job;
+                updated.push(job);
+                if (job.status !== 'queued' && job.status !== 'processing') {
+                    _removeId(job.id);
+                }
+            });
+            setActiveJobs(updated);
+        } catch (e) { console.error('Poll error:', e); }
+    }, []);
+
+    // On mount: restore from localStorage + server
+    useEffect(() => {
+        async function restore() {
+            const savedIds = _loadIds();
+            try {
+                const res = await fetch('/api/jobs/active');
+                const data = await res.json();
+                if (data.success && data.jobs) {
+                    data.jobs.forEach(job => { if (!savedIds.includes(job.id)) savedIds.push(job.id); });
+                }
+            } catch (e) {}
+            if (savedIds.length > 0) { _saveIds(savedIds); pollActiveJobs(savedIds); }
+        }
+        restore();
+    }, []);
+
+    // Poll interval
+    useEffect(() => {
+        const iv = setInterval(() => { const ids = _loadIds(); if (ids.length > 0) pollActiveJobs(ids); }, 5000);
+        return () => clearInterval(iv);
+    }, [pollActiveJobs]);
+
+    function dismissJob(jobId) { _removeId(jobId); setActiveJobs(prev => prev.filter(j => j.id !== jobId)); }
 
     // Load saved workflows
     useEffect(() => {
@@ -1090,6 +1142,9 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
             if (data.success) {
                 setJobResult(data.job);
                 addToast(`Job #${data.job.id} đang xử lý (${nodes.length} nodes) 🚀`, 'success');
+                // Track this job for progress panel
+                _addId(data.job.id);
+                setActiveJobs(prev => [...prev, data.job]);
             } else {
                 addToast(data.detail || 'Lỗi chạy workflow', 'error');
             }
@@ -1179,6 +1234,9 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
             const data = await res.json();
             if (data.success) {
                 addToast(`Job #${data.job.id} đang xử lý workflow "${selectedWf.name}" 🚀`, 'success');
+                // Track this job for progress panel
+                _addId(data.job.id);
+                setActiveJobs(prev => [...prev, data.job]);
             } else {
                 addToast(data.detail || 'Lỗi chạy workflow', 'error');
             }
@@ -1365,6 +1423,91 @@ function WorkflowBuilderPage({ addToast, setLoading }) {
             </div>
 
             {/* ===== Tab: Google Drive ===== */}
+            {/* ===== Workflow Progress Panel ===== */}
+            {activeJobs.length > 0 && (
+                <div className="card" style={{ borderLeft: '4px solid var(--accent-primary)', marginBottom: '1.5rem' }}>
+                    <div className="card-header">
+                        <span className="phase-badge" style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}>Live</span>
+                        <h3>{'⚡'} Workflow Progress ({activeJobs.filter(j => j.status === 'queued' || j.status === 'processing').length} {'đang chạy'})</h3>
+                    </div>
+                    {activeJobs.map(job => {
+                        const isActive = job.status === 'queued' || job.status === 'processing';
+                        const nodeStatuses = job.node_statuses || [];
+                        const totalN = job.total_nodes || nodeStatuses.length || 1;
+                        const completedN = nodeStatuses.filter(n => n.status === 'completed').length;
+                        const progressPct = totalN > 0 ? Math.round((completedN / totalN) * 100) : 0;
+                        const isFinalizing = job.status === 'processing' && completedN === totalN;
+
+                        const statusLabel = job.status === 'queued' ? '⏳ Đang chờ...'
+                            : job.status === 'processing' ? (isFinalizing ? '⚙️ Đang hoàn tất...' : '⚡ Node ' + (completedN + 1) + '/' + totalN)
+                            : job.status === 'rendered' ? 'Rendered'
+                            : job.status === 'pending_review' ? '✅ Hoàn tất!'
+                            : job.status === 'failed' ? '❌ Thất bại'
+                            : job.status;
+
+                        return (
+                            <div key={job.id} style={{
+                                padding: '1rem 1.25rem',
+                                borderBottom: '1px solid var(--border-light)',
+                                background: isActive ? 'rgba(99, 102, 241, 0.03)' : 'transparent',
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <strong style={{ color: 'var(--text-primary)' }}>#{job.id}</strong>
+                                        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{job.title || 'Workflow'}</span>
+                                        <span className={`badge badge-${job.status}`}>{statusLabel}</span>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                        {job.final_video_url && <a href={job.final_video_url} target="_blank" className="btn btn-success btn-sm">🎬 Xem video</a>}
+                                        {!isActive && <button className="btn btn-outline btn-sm" onClick={() => dismissJob(job.id)}>✕</button>}
+                                    </div>
+                                </div>
+                                {/* Progress bar */}
+                                <div style={{ background: 'var(--bg-tertiary)', borderRadius: 8, height: 6, marginBottom: '0.5rem', overflow: 'hidden' }}>
+                                    <div style={{
+                                        height: '100%',
+                                        width: job.status === 'pending_review' || job.status === 'rendered' ? '100%' : progressPct + '%',
+                                        background: job.status === 'failed' ? 'var(--accent-danger)' : 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary))',
+                                        borderRadius: 8,
+                                        transition: 'width 0.5s ease',
+                                    }}></div>
+                                </div>
+                                {/* Node status chips */}
+                                {nodeStatuses.length > 0 && (
+                                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                                        {nodeStatuses.map((ns, idx) => {
+                                            const chipIcon = ns.status === 'completed' ? '✅'
+                                                : ns.status === 'processing' ? '⚡'
+                                                : ns.status === 'failed' ? '❌' : '⏳';
+                                            const chipBg = ns.status === 'completed' ? 'rgba(16, 185, 129, 0.1)'
+                                                : ns.status === 'processing' ? 'rgba(99, 102, 241, 0.1)'
+                                                : ns.status === 'failed' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(148, 163, 184, 0.1)';
+                                            const chipColor = ns.status === 'completed' ? '#059669'
+                                                : ns.status === 'processing' ? '#4f46e5'
+                                                : ns.status === 'failed' ? '#dc2626' : '#94a3b8';
+                                            return (
+                                                <div key={idx} style={{
+                                                    display: 'inline-flex', alignItems: 'center', gap: '0.2rem',
+                                                    padding: '0.15rem 0.5rem', borderRadius: 12, fontSize: '0.75rem',
+                                                    background: chipBg, color: chipColor, fontWeight: 500,
+                                                    border: ns.status === 'processing' ? '1px solid rgba(99,102,241,0.3)' : 'none',
+                                                    animation: ns.status === 'processing' ? 'pulse 2s ease-in-out infinite' : 'none',
+                                                }}>
+                                                    {chipIcon} Node {ns.node}
+                                                    {ns.status === 'completed' && ns.thumbnail_url && (
+                                                        <img src={ns.thumbnail_url} alt="" style={{ width: 16, height: 16, borderRadius: 3, objectFit: 'cover', marginLeft: 2 }} />
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+
             <div className="card" style={{ display: activeTab === 'drive' ? 'block' : 'none' }}>
                 <div className="card-header">
                     <span className="phase-badge" style={{ background: 'linear-gradient(135deg, #4285f4, #34a853)' }}>Drive</span>
