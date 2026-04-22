@@ -56,6 +56,9 @@ class VideoJob(Base):
     # Review
     reject_reason = Column(Text, nullable=True)
 
+    # Error tracking
+    error_message = Column(Text, nullable=True)
+
     # Celery
     celery_task_id = Column(String(200), nullable=True)
 
@@ -95,6 +98,7 @@ class VideoJob(Base):
             "audio_url": self.audio_url,
             "final_video_url": self.final_video_url,
             "reject_reason": self.reject_reason,
+            "error_message": self.error_message,
             "celery_task_id": self.celery_task_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
@@ -251,6 +255,93 @@ class DriveImage(Base):
             "image_url": self.image_url,
             "status": self.status.value if self.status else None,
             "job_id": self.job_id,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+# =============================================
+# Bulk Video Pipeline Job
+# =============================================
+
+class BulkJobStatus(str, enum.Enum):
+    PENDING          = "pending"
+    GENERATING_SCRIPTS = "generating_scripts"
+    GENERATING_VIDEOS  = "generating_videos"
+    MIXING_VIDEOS      = "mixing_videos"
+    SYNCING_AUDIO      = "syncing_audio"
+    UPLOADING_DRIVE    = "uploading_drive"
+    DONE             = "done"
+    FAILED           = "failed"
+
+
+class BulkJob(Base):
+    __tablename__ = "bulk_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    status = Column(Enum(BulkJobStatus), default=BulkJobStatus.PENDING, nullable=False, index=True)
+
+    # Config for Workflow Bulk mode
+    workflow_nodes      = Column(JSON, nullable=True)     # list of dicts (node definitions)
+    is_workflow_mode    = Column(Boolean, default=False)
+
+    # --- Input ---
+    product_name        = Column(String(500), nullable=False)
+    product_description = Column(Text, nullable=True)
+    product_price       = Column(String(100), nullable=True)
+    keywords            = Column(Text, nullable=True)
+    product_image_url   = Column(Text, nullable=True)     # uploaded image (local path or R2 URL)
+
+    # Audio: JSON array of local paths OR empty (use AI generation)
+    audio_paths         = Column(JSON, nullable=True)     # list[str] — 6 uploaded audio files
+    use_ai_audio        = Column(Boolean, default=False)  # fallback: edge-TTS
+
+    # Provider config
+    video_model         = Column(String(50), default="kling-3.0")
+    video_duration      = Column(Integer, default=5)      # seconds per source clip
+    n_workspaces        = Column(Integer, default=5)
+
+    # --- Intermediate results ---
+    workspace_scripts   = Column(JSON, nullable=True)     # list of WorkspaceScript dicts
+    source_video_paths  = Column(JSON, nullable=True)     # list[str] — up to 15 paths
+    source_video_urls   = Column(JSON, nullable=True)     # list[str] — public URLs from provider
+    mixed_video_paths   = Column(JSON, nullable=True)     # list[str] — 6 paths after mix
+    generated_audio_paths = Column(JSON, nullable=True)   # list[str] — 6 audio paths
+
+    # --- Final output ---
+    final_video_paths   = Column(JSON, nullable=True)     # list[str] — 6 final .mp4 paths
+    drive_folder_id     = Column(String(200), nullable=True)
+    drive_folder_url    = Column(Text, nullable=True)
+    drive_files         = Column(JSON, nullable=True)     # list of {file_id, view_url}
+
+    # --- Error / Celery ---
+    error_log           = Column(Text, nullable=True)
+    celery_task_id      = Column(String(200), nullable=True)
+    progress_pct        = Column(Integer, default=0)      # 0-100
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "status": self.status.value if self.status else None,
+            "is_workflow_mode": self.is_workflow_mode,
+            "product_name": self.product_name,
+            "product_description": self.product_description,
+            "product_price": self.product_price,
+            "keywords": self.keywords,
+            "product_image_url": self.product_image_url,
+            "use_ai_audio": self.use_ai_audio,
+            "video_model": self.video_model,
+            "n_workspaces": self.n_workspaces,
+            "source_video_urls": self.source_video_urls,
+            "drive_folder_url": self.drive_folder_url,
+            "drive_files": self.drive_files,
+            "error_log": self.error_log,
+            "celery_task_id": self.celery_task_id,
+            "progress_pct": self.progress_pct,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

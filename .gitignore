@@ -48,3 +48,9 @@ app/static/uploads/
 # Debug files
 reproduce_*.py
 shopee_*.png
+
+#Agent
+.agent/
+
+#source
+source_images

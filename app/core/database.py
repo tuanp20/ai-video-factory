@@ -24,5 +24,5 @@ def get_db():
 
 def init_db():
     """Create all tables. Call once at startup."""
-    from app.core.models import VideoJob, JobLog  # noqa: F401
+    from app.core.models import VideoJob, JobLog, MergeJob, CustomWorkflow, DriveImage, BulkJob  # noqa: F401
     Base.metadata.create_all(bind=engine)

@@ -927,3 +927,208 @@ def api_run_saved_workflow(
 async def workflow_builder_page():
     return FileResponse(REACT_INDEX, media_type="text/html")
 
+
+# =============================================
+# Bulk Video Pipeline API
+# =============================================
+
+from app.core.models import BulkJob, BulkJobStatus  # noqa: E402
+from app.worker.bulk_tasks import bulk_video_pipeline_task  # noqa: E402
+
+
+@app.post("/api/bulk-pipeline/start")
+async def api_bulk_start(
+    product_name: str = Form(...),
+    product_description: str = Form(""),
+    product_price: str = Form(""),
+    keywords: str = Form(""),
+    product_image_url: str = Form(""),
+    video_model: str = Form("kling-3.0"),
+    use_ai_audio: str = Form("false"),
+    audio_files: list[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+):
+    """
+    Start the Bulk Video Pipeline.
+
+    Accepts: product info + up to 6 audio files (optional).
+    Returns: bulk_job_id for polling.
+    """
+    use_ai = use_ai_audio.lower() in ("true", "1", "yes")
+
+    # Save uploaded audio files to temp storage
+    audio_paths = []
+    if audio_files and not use_ai:
+        audio_save_dir = os.path.join(settings.TEMP_DIR, "bulk_audio_uploads")
+        os.makedirs(audio_save_dir, exist_ok=True)
+
+        for i, af in enumerate(audio_files[:6]):
+            if not af.filename:
+                continue
+            contents = await af.read()
+            if not contents:
+                continue
+            ext = af.filename.rsplit(".", 1)[-1].lower() if "." in af.filename else "mp3"
+            dest = os.path.join(audio_save_dir, f"uploaded_audio_{i}.{ext}")
+            with open(dest, "wb") as f:
+                f.write(contents)
+            audio_paths.append(dest)
+            logger.info(f"[API/Bulk] Saved audio {i}: {dest} ({len(contents) // 1024} KB)")
+
+    # Create BulkJob
+    bulk = BulkJob(
+        product_name=product_name.strip(),
+        product_description=product_description.strip(),
+        product_price=product_price.strip(),
+        keywords=keywords.strip(),
+        product_image_url=product_image_url.strip() or None,
+        video_model=video_model,
+        use_ai_audio=use_ai or len(audio_paths) < 6,
+        audio_paths=audio_paths if audio_paths else None,
+        status=BulkJobStatus.PENDING,
+        progress_pct=0,
+    )
+    db.add(bulk)
+    db.commit()
+    db.refresh(bulk)
+
+    # Dispatch to Celery
+    task = bulk_video_pipeline_task.delay(bulk.id)
+    bulk.celery_task_id = task.id
+    db.commit()
+
+    logger.info(f"[API/Bulk] BulkJob #{bulk.id} created → Celery task {task.id}")
+
+    return {
+        "success": True,
+        "bulk_job_id": bulk.id,
+        "celery_task_id": task.id,
+        "message": f"Bulk pipeline started for '{product_name}'",
+    }
+
+@app.post("/api/bulk-pipeline/start-workflow")
+async def api_bulk_start_workflow(
+    product_name: str = Form("Bulk Workflow Job"),
+    workflow_nodes_str: str = Form(...),
+    use_ai_audio: str = Form("true"),
+    audio_files: list[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db)
+):
+    import json
+    import uuid
+    nodes = json.loads(workflow_nodes_str)
+    
+    local_audio_paths = []
+    if use_ai_audio.lower() == "false" and audio_files:
+        audio_dir = os.path.join(settings.TEMP_DIR, "audios")
+        os.makedirs(audio_dir, exist_ok=True)
+        for af in audio_files:
+            file_ext = os.path.splitext(af.filename)[1] or ".mp3"
+            file_path = os.path.join(audio_dir, f"upl_{uuid.uuid4().hex[:8]}{file_ext}")
+            with open(file_path, "wb") as f:
+                content = await af.read()
+                f.write(content)
+            local_audio_paths.append(file_path)
+
+    bulk = BulkJob(
+        product_name=product_name,
+        is_workflow_mode=True,
+        workflow_nodes=nodes,
+        use_ai_audio=(use_ai_audio.lower() == "true"),
+        audio_paths=local_audio_paths,
+        status=BulkJobStatus.PENDING
+    )
+    db.add(bulk)
+    db.commit()
+    db.refresh(bulk)
+
+    from app.worker.bulk_tasks import bulk_workflow_pipeline_task
+    task = bulk_workflow_pipeline_task.delay(bulk.id)
+    
+    return {
+        "success": True,
+        "bulk_job_id": bulk.id,
+        "celery_task_id": task.id,
+        "message": f"Bulk workflow started"
+    }
+
+
+@app.get("/api/bulk-pipeline/{bulk_job_id}/status")
+def api_bulk_status(bulk_job_id: int, db: Session = Depends(get_db)):
+    """
+    Poll the status and progress of a BulkJob.
+
+    Returns: status, progress_pct, drive_folder_url (when done), error_log.
+    """
+    bulk = db.query(BulkJob).filter(BulkJob.id == bulk_job_id).first()
+    if not bulk:
+        raise HTTPException(status_code=404, detail=f"BulkJob #{bulk_job_id} not found")
+
+    return {
+        "success": True,
+        "bulk_job_id": bulk.id,
+        "status": bulk.status.value,
+        "progress_pct": bulk.progress_pct or 0,
+        "drive_folder_url": bulk.drive_folder_url,
+        "error_log": bulk.error_log,
+        "updated_at": bulk.updated_at.isoformat() if bulk.updated_at else None,
+    }
+
+
+@app.get("/api/bulk-pipeline/{bulk_job_id}/result")
+def api_bulk_result(bulk_job_id: int, db: Session = Depends(get_db)):
+    """
+    Get the full result of a completed BulkJob.
+
+    Returns: drive_folder_url, list of uploaded video links.
+    """
+    bulk = db.query(BulkJob).filter(BulkJob.id == bulk_job_id).first()
+    if not bulk:
+        raise HTTPException(status_code=404, detail=f"BulkJob #{bulk_job_id} not found")
+
+    if bulk.status != BulkJobStatus.DONE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"BulkJob #{bulk_job_id} is not done yet (status: {bulk.status.value})"
+        )
+
+    return {
+        "success": True,
+        "bulk_job": bulk.to_dict(),
+        "drive_folder_url": bulk.drive_folder_url,
+        "drive_files": bulk.drive_files or [],
+        "videos_count": len(bulk.drive_files or []),
+    }
+
+
+@app.post("/api/bulk-pipeline/{bulk_job_id}/cancel")
+def api_bulk_cancel(bulk_job_id: int, db: Session = Depends(get_db)):
+    """Cancel a pending/running BulkJob."""
+    bulk = db.query(BulkJob).filter(BulkJob.id == bulk_job_id).first()
+    if not bulk:
+        raise HTTPException(status_code=404, detail=f"BulkJob #{bulk_job_id} not found")
+
+    if bulk.status in (BulkJobStatus.DONE, BulkJobStatus.FAILED):
+        raise HTTPException(status_code=400, detail=f"Cannot cancel: job already {bulk.status.value}")
+
+    # Revoke Celery task
+    if bulk.celery_task_id:
+        try:
+            from celery.result import AsyncResult
+            AsyncResult(bulk.celery_task_id).revoke(terminate=True)
+        except Exception as e:
+            logger.warning(f"[API/Bulk] Could not revoke Celery task: {e}")
+
+    bulk.status = BulkJobStatus.FAILED
+    bulk.error_log = (bulk.error_log or "") + "\nCancelled by user."
+    db.commit()
+
+    return {"success": True, "message": f"BulkJob #{bulk_job_id} cancelled"}
+
+
+@app.get("/api/bulk-pipeline")
+def api_bulk_list(limit: int = 20, db: Session = Depends(get_db)):
+    """List recent BulkJobs."""
+    jobs = db.query(BulkJob).order_by(BulkJob.created_at.desc()).limit(limit).all()
+    return {"success": True, "total": len(jobs), "jobs": [j.to_dict() for j in jobs]}
+

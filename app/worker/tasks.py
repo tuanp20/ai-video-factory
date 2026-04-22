@@ -185,6 +185,7 @@ def _mark_failed(db, job_id: int, phase: str, message: str):
         job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
         if job:
             job.status = JobStatus.FAILED
+            job.error_message = message[:1000]  # Truncate to avoid DB overflow
             db.commit()
         _add_log(db, job_id, phase, f"FAILED: {message}")
     except Exception:
